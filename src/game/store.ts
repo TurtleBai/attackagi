@@ -48,11 +48,14 @@ interface GameState {
   bossBarVisible: boolean
   warning: string | null // e.g. 'JUMP!'
   runId: number // increments on restart so systems can hard-reset
+  pausedFrom: GamePhase | null // sim phase to return to on resume
 
   // actions
   set: (partial: Partial<GameState>) => void
   startGame: () => void
   restart: () => void
+  pause: () => void
+  resume: () => void
   damage: (amount: number) => void // called only by world.damagePlayer
   heal: (amount: number) => void
   offerBuffs: (choices: BuffId[]) => void
@@ -81,6 +84,7 @@ const initialRun = () => {
     bossMaxHp: BOSS_HP,
     bossBarVisible: false,
     warning: null,
+    pausedFrom: null as GamePhase | null,
   }
 }
 
@@ -93,6 +97,18 @@ export const useGame = create<GameState>((set, get) => ({
   startGame: () => set({ phase: 'wave', wave: 1 }),
 
   restart: () => set({ ...initialRun(), runId: get().runId + 1, phase: 'wave', wave: 1 }),
+
+  pause: () => {
+    const { phase } = get()
+    if (phase === 'wave' || phase === 'smash' || phase === 'boss') {
+      set({ phase: 'paused', pausedFrom: phase })
+    }
+  },
+
+  resume: () => {
+    const { phase, pausedFrom } = get()
+    if (phase === 'paused') set({ phase: pausedFrom ?? 'wave', pausedFrom: null })
+  },
 
   damage: (amount) => {
     const { hp, phase } = get()

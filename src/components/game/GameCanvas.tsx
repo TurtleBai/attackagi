@@ -3,6 +3,8 @@ import { Canvas, useFrame } from '@react-three/fiber'
 import { Bloom, EffectComposer, N8AO, Vignette } from '@react-three/postprocessing'
 import { Suspense } from 'react'
 import * as THREE from 'three'
+import { events } from '@/game/events'
+import { useGame } from '@/game/store'
 import { world } from '@/game/world'
 import { Agi } from './Agi'
 import { Arena } from './Arena'
@@ -14,8 +16,12 @@ import { Vfx } from './Vfx'
 import { Weapons } from './Weapons'
 
 // Advances the shared simulation clock exactly once per frame, before every system.
+// Frozen while paused / picking buffs so absolute-time timers (telegraphs, sniper
+// cycles, reload & dodge cooldowns) don't burn down behind the menu.
 function WorldClock() {
   useFrame((_, dt) => {
+    const phase = useGame.getState().phase
+    if (phase === 'paused' || phase === 'buffSelect') return
     world.time += Math.min(dt, 0.05)
   }, -1000)
   return null
@@ -50,13 +56,17 @@ export default function GameCanvas() {
   return (
     <Canvas
       shadows
-      dpr={[1, 1.75]}
+      dpr={[1, 1.5]}
       camera={{ fov: 78, near: 0.08, far: 400, position: [0, 1.7, 10] }}
       gl={{ powerPreference: 'high-performance' }}
-      onCreated={({ gl, scene }) => {
+      onCreated={({ gl, scene, camera }) => {
         gl.toneMapping = THREE.ACESFilmicToneMapping
         scene.background = new THREE.Color(0x0b0e1a)
         scene.fog = new THREE.Fog(0x0b0e1a, 70, 260)
+        if (process.env.NODE_ENV === 'development') {
+          // dev-only debug/profiling handle (console: window.__game)
+          ;(window as unknown as Record<string, unknown>).__game = { gl, scene, camera, world, store: useGame, events }
+        }
       }}
     >
       <WorldClock />
@@ -72,7 +82,7 @@ export default function GameCanvas() {
       </Suspense>
       <Director />
       <EffectComposer>
-        <N8AO aoRadius={2.2} intensity={3.2} distanceFalloff={1} quality="medium" />
+        <N8AO aoRadius={2.2} intensity={3.2} distanceFalloff={1} quality="performance" halfRes />
         <Bloom mipmapBlur luminanceThreshold={1.0} intensity={0.85} />
         <Vignette darkness={0.72} offset={0.28} />
       </EffectComposer>

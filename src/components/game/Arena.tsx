@@ -1,9 +1,24 @@
 'use client'
+import { ArenaAmbient } from './Arena.ambient'
+import { ArenaEnviron } from './Arena.env'
+import { ArenaFloor } from './Arena.floor'
+import { ArenaObstacles } from './Arena.obstacles'
 
-// STUB — implemented by workflow agent "arena".
-// Owns: arena disc terrain (shader displacement + parallax detail via gfx/textures),
-// rim/skyline environment, obstacle placement (world.addObstacle) + rendering with
-// modeled relief, obstacle destruction on world.clearObstacles (smash), ambient dust.
+// Arena module: war-scarred sci-fi launch platform floating over a city abyss.
+// - Arena.floor: displaced disc + custom shader detail (markings, seam glow, scorch)
+// - Arena.env: parapet ring, under-trusses, void gradient, skyline, clouds,
+//   stars, radar dish, flickering rim lights
+// - Arena.obstacles: cover registration on world + modeled instanced meshes +
+//   collapse destruction with dust puffs
+// - Arena.ambient: drifting dust motes + rising embers
+
 export function Arena() {
-  return null
+  return (
+    <>
+      <ArenaFloor />
+      <ArenaEnviron />
+      <ArenaObstacles />
+      <ArenaAmbient />
+    </>
+  )
 }
