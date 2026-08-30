@@ -556,10 +556,11 @@ function updateMiniguns(
   }
   const mk = p.marker
   if (mk) {
-    // marker chases the player at ~6.5 m/s — lags a running player
+    // marker chases the player at ~9.5 m/s — presses hard, but base run speed
+    // (9.5 * moveSpeedMult) still outruns it with any speed buff or a dodge
     _v1.set(world.player.pos.x - mk.pos.x, 0, world.player.pos.z - mk.pos.z)
     const d = _v1.length()
-    if (d > 1e-4) mk.pos.addScaledVector(_v1.divideScalar(d), Math.min(6.5 * step, d))
+    if (d > 1e-4) mk.pos.addScaledVector(_v1.divideScalar(d), Math.min(9.5 * step, d))
     mk.pos.y = 0
   }
   for (let i = 0; i < 2; i++) {

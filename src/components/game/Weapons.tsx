@@ -191,11 +191,28 @@ export function Weapons() {
       e.vel.z += dz * inv * kb
       events.emit('batHit', { pos: _chest.clone(), charged: charge })
     }
-    // boss hands / head within melee reach
-    const hit = world.raycastShot(_eye, _dir, BAT_RANGE)
-    if (hit && hit.kind === 'boss') {
-      world.damageBoss(dmg, hit.point)
-      events.emit('batHit', { pos: hit.point.clone(), charged: charge })
+    // giant boss hands (punch linger + tired rest): proximity strike — the
+    // forward ray whiffs when the player stands beside/inside the big sphere,
+    // so a swing next to a hand always connects
+    let hitHand = false
+    for (const hand of world.agi.punchHands) {
+      if (hand.hpLeft <= 0) continue
+      const dxh = hand.pos.x - world.player.pos.x
+      const dzh = hand.pos.z - world.player.pos.z
+      if (Math.hypot(dxh, dzh) <= BAT_RANGE + hand.radius) {
+        world.damageBoss(dmg, hand.pos)
+        events.emit('batHit', { pos: hand.pos.clone(), charged: charge })
+        hitHand = true
+      }
+    }
+    // head / other weak points still via the forward ray (skip if a hand
+    // already took this swing — no double dipping)
+    if (!hitHand) {
+      const hit = world.raycastShot(_eye, _dir, BAT_RANGE)
+      if (hit && hit.kind === 'boss') {
+        world.damageBoss(dmg, hit.point)
+        events.emit('batHit', { pos: hit.point.clone(), charged: charge })
+      }
     }
   }
 
