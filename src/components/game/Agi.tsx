@@ -488,7 +488,9 @@ function updateDeathBeam(p: Extract<PatternState, { id: 'deathBeam' }>, S: Local
     const side = Math.random() < 0.5 ? 1 : -1
     p.x0 = THREE.MathUtils.clamp(px - side * 8, -(ARENA_RADIUS - 3), ARENA_RADIUS - 3)
     p.x1 = side * (ARENA_RADIUS - 1)
-    const NR = 6
+    // enough overlapping stripes that the sweep is contiguous — a fixed count
+    // left multi-meter always-safe gaps the beam visual swept straight through
+    const NR = Math.max(2, Math.ceil(Math.abs(p.x1 - p.x0) / (DEATHBEAM_WIDTH * 0.85)) + 1)
     for (let i = 0; i < NR; i++) {
       const x = THREE.MathUtils.lerp(p.x0, p.x1, i / (NR - 1))
       // staggered durations = hit times marching across the arena
@@ -752,6 +754,10 @@ function startDying(S: Local): void {
   world.agi.mode = 'dying'
   world.agi.vulnerable = false
   world.agi.punchHands = []
+  // a won fight must not kill the player: sweep every in-flight hostile
+  world.projectiles.length = 0
+  for (const tg of world.telegraphs) tg.resolved = true
+  for (const h of world.hazards) h.until = world.time
   S.sparkOn[0] = S.sparkOn[1] = false
   for (const arm of S.arms) {
     arm.morphGoal = 0

@@ -1,5 +1,5 @@
 import * as THREE from 'three'
-import { ARENA_RADIUS, PLAYER_RADIUS } from './constants'
+import { ARENA_RADIUS, PLAYER_RADIUS, TANK_SHIELD_ARC } from './constants'
 import { events } from './events'
 import { useGame } from './store'
 import type {
@@ -256,7 +256,7 @@ class World {
         const toShooter = _v1.copy(origin).sub(e.pos).setY(0).normalize()
         const facing = _v2.set(Math.sin(e.yaw), 0, Math.cos(e.yaw))
         const halfArc = Math.acos(THREE.MathUtils.clamp(facing.dot(toShooter), -1, 1))
-        if (halfArc < 0.62 * Math.PI * 0.5 + 0.35) {
+        if (halfArc < TANK_SHIELD_ARC / 2) {
           bestDist = t
           result = { kind: 'shieldBlock', enemy: e, dist: t, point }
           continue
@@ -337,7 +337,7 @@ class World {
   enemiesInCircle(center: THREE.Vector3, radius: number): Enemy[] {
     const out: Enemy[] = []
     for (const e of this.enemies.values()) {
-      if (e.hp <= 0) continue
+      if (e.hp <= 0 || e.falling) continue // ground-area damage skips mid-air drops
       const dx = e.pos.x - center.x
       const dz = e.pos.z - center.z
       if (dx * dx + dz * dz <= (radius + e.radius) ** 2) out.push(e)

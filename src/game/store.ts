@@ -12,7 +12,9 @@ function computeStats(buffs: OwnedBuffs): PlayerStats {
   return {
     maxHp: PLAYER_HP + 25 * n('plating'),
     moveSpeedMult: 1 + 0.12 * n('fleetFooted'),
-    dodgeCooldown: Math.max(0.5, DODGE_COOLDOWN - 0.6 * n('phantomStep')),
+    // floor 1.2s: with 0.38s i-frames, anything lower makes stacked Phantom
+    // Step a near-permanent invulnerability loop (and trivializes the death beam)
+    dodgeCooldown: Math.max(1.2, DODGE_COOLDOWN - 0.6 * n('phantomStep')),
     pistolDamage: PISTOL_DAMAGE * (1 + 0.4 * n('hollowPoints')),
     magSize: PISTOL_MAG + 4 * n('extendedMag'),
     reserveMax: PISTOL_RESERVE_START + 24 * n('deepPockets'),

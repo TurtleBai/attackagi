@@ -103,7 +103,9 @@ const sepList: Enemy[] = []
 function separate(step: number): void {
   sepList.length = 0
   for (const e of world.enemies.values()) {
-    if (e.falling || e.hp <= 0 || e.state === 'dash') continue
+    // windup tanks are locked to their telegraphed dash line — separation
+    // shoving them mid-telegraph desynced the red rectangle from the bash
+    if (e.falling || e.hp <= 0 || e.state === 'dash' || (e.kind === 'tank' && e.state === 'windup')) continue
     sepList.push(e)
   }
   for (let i = 0; i < sepList.length; i++) {
@@ -512,6 +514,19 @@ export function Enemies() {
             if (e.stateT >= DYING_TIME) removeList.push(e.id)
           }
           continue
+        }
+        // integrate melee-shove impulses (bat knockback writes e.vel.x/z; AI
+        // moves via e.pos directly, so without this the impulse was a no-op)
+        if (e.vel.x !== 0 || e.vel.z !== 0) {
+          e.pos.x += e.vel.x * step
+          e.pos.z += e.vel.z * step
+          const f = Math.max(0, 1 - 10 * step)
+          e.vel.x *= f
+          e.vel.z *= f
+          if (e.vel.x * e.vel.x + e.vel.z * e.vel.z < 0.01) {
+            e.vel.x = 0
+            e.vel.z = 0
+          }
         }
         if ((e.data.landT ?? 0) > 0) {
           e.data.landT = (e.data.landT ?? 0) - step

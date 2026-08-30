@@ -261,20 +261,23 @@ function WeaponPanel() {
   const reloading = useGame((s) => s.reloading)
   const reloadRef = useRef<HTMLDivElement>(null)
 
-  // reload progress micro-bar: width tween driven by the reloadStart event
+  // reload progress micro-bar driven off world.time (NOT a wall-clock CSS
+  // transition — pausing mid-reload freezes the sim clock, and the bar with it)
+  const reloadT = useRef<{ start: number; dur: number } | null>(null)
   useEffect(
     () =>
       events.on('reloadStart', ({ duration }) => {
-        const el = reloadRef.current
-        if (!el) return
-        el.style.transition = 'none'
-        el.style.width = '0%'
-        void el.offsetWidth // reflow so the next transition starts from 0
-        el.style.transition = `width ${duration}s linear`
-        el.style.width = '100%'
+        reloadT.current = { start: world.time, dur: Math.max(0.05, duration) }
       }),
     [],
   )
+  useRafLoop(() => {
+    const el = reloadRef.current
+    const rt = reloadT.current
+    if (!el || !rt) return
+    const p = Math.min(1, Math.max(0, (world.time - rt.start) / rt.dur))
+    el.style.width = `${(p * 100).toFixed(1)}%`
+  })
 
   const meta = WEAPON_META[weapon]
   const magLow = ammoInMag <= 2

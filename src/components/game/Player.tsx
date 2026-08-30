@@ -125,6 +125,9 @@ export function Player() {
       if (e.code === 'Space') e.preventDefault() // no page scroll
       keys.current.add(e.code) // before the repeat gate: repeats re-add after a reset
       if (e.repeat) return
+      // action buffers only while the sim runs — keys pressed on menus/pause
+      // must not fire an uncommanded jump/dodge on the first resumed frame
+      if (!simRunning(useGame.getState().phase)) return
       const b = useSettings.getState().bindings
       if (e.code === b.jump) jumpBufferedAt.current = world.time
       if (e.code === b.dodge) dodgeQueued.current = true

@@ -4,6 +4,7 @@ import { Bloom, EffectComposer, N8AO, Vignette } from '@react-three/postprocessi
 import { Suspense } from 'react'
 import * as THREE from 'three'
 import { events } from '@/game/events'
+import { useSettings } from '@/game/settings'
 import { useGame } from '@/game/store'
 import { world } from '@/game/world'
 import { Agi } from './Agi'
@@ -56,10 +57,13 @@ function Lighting() {
 }
 
 export default function GameCanvas() {
+  // 'smooth' (default): 20% fewer pixels, no AO pass, lighter bloom — for frame
+  // rate. 'pretty': the full pipeline. Toggled in the pause menu.
+  const smooth = useSettings((s) => s.quality) === 'smooth'
   return (
     <Canvas
       shadows
-      dpr={[1, 1.5]}
+      dpr={smooth ? [1, 1.2] : [1, 1.5]}
       camera={{ fov: 78, near: 0.08, far: 400, position: [0, 1.7, 10] }}
       // canvas MSAA is wasted work: every frame ends as the composer's
       // fullscreen quad — AA comes from EffectComposer multisampling instead
@@ -89,11 +93,18 @@ export default function GameCanvas() {
       {/* multisampling 4 (default is 8) halves MSAA resolve cost on the HDR
           buffer at near-identical edge quality; Bloom levels 6 (default 8)
           drops the two smallest, barely-visible mip passes */}
-      <EffectComposer multisampling={4}>
-        <N8AO aoRadius={2.2} intensity={3.2} distanceFalloff={1} quality="performance" halfRes />
-        <Bloom mipmapBlur levels={6} luminanceThreshold={1.0} intensity={0.85} />
-        <Vignette darkness={0.72} offset={0.28} />
-      </EffectComposer>
+      {smooth ? (
+        <EffectComposer multisampling={0}>
+          <Bloom mipmapBlur levels={5} luminanceThreshold={1.0} intensity={0.85} />
+          <Vignette darkness={0.72} offset={0.28} />
+        </EffectComposer>
+      ) : (
+        <EffectComposer multisampling={4}>
+          <N8AO aoRadius={2.2} intensity={3.2} distanceFalloff={1} quality="performance" halfRes />
+          <Bloom mipmapBlur levels={6} luminanceThreshold={1.0} intensity={0.85} />
+          <Vignette darkness={0.72} offset={0.28} />
+        </EffectComposer>
+      )}
     </Canvas>
   )
 }

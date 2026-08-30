@@ -431,7 +431,10 @@ function detonateMolotov(p: Projectile): void {
   const radius = stats.molotovRadius
   const victims = world.enemiesInCircle(p.pos, radius)
   for (const e of victims) world.damageEnemy(e.id, MOLOTOV_DAMAGE)
-  world.damageBoss(MOLOTOV_DAMAGE, p.pos)
+  // boss splash counts only when the blast actually reaches a resting/lingering
+  // hand — the bare vulnerable flag let arena-wide detonations chip the boss
+  const hand = world.agi.punchHands.find((h) => h.hpLeft > 0 && p.pos.distanceTo(h.pos) <= radius + h.radius)
+  if (hand) world.damageBoss(MOLOTOV_DAMAGE, hand.pos)
   _ground.set(p.pos.x, 0, p.pos.z)
   world.addHazard({
     kind: 'fire',
@@ -543,7 +546,9 @@ function resolveTelegraphs(): void {
         if (pay.dodgeableByJump && world.player.pos.y > JUMP_CLEAR_Y) hit = false
         if (hit) {
           if (pay.instakill) world.damagePlayer(0, { instakill: true })
-          else world.damagePlayer(pay.damage)
+          // beam payloads deliver damage via the spawned wall's DoT — applying
+          // it here too double-dipped (stripes hit for 70 instead of 35)
+          else if (!pay.beam) world.damagePlayer(pay.damage)
         }
         if (pay.explosion) {
           events.emit('explosion', {
@@ -592,7 +597,7 @@ function tickHazards(step: number): void {
         // player-owned fire cooks enemies only (inline circle test — avoids
         // enemiesInCircle's per-frame array allocation in this hot loop)
         for (const e of world.enemies.values()) {
-          if (e.hp <= 0) continue
+          if (e.hp <= 0 || e.falling) continue // ground fire can't cook mid-air drops
           const dx = e.pos.x - pos.x
           const dz = e.pos.z - pos.z
           const rr = radius + e.radius

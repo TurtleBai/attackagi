@@ -52,12 +52,17 @@ export function keyLabel(code: string): string {
   return map[code] ?? code.toUpperCase()
 }
 
+export type GraphicsQuality = 'smooth' | 'pretty'
+
 interface SettingsState {
   lookSensitivity: number // multiplier, 0.3 .. 2.5 (1 = default)
   bindings: Record<BindableAction, string>
+  /** 'smooth' trades AO + render scale for frame rate; 'pretty' is the full pipeline */
+  quality: GraphicsQuality
   setSensitivity: (v: number) => void
   /** Bind `code` to `action`. If the code is already bound elsewhere, the two actions swap. */
   setBinding: (action: BindableAction, code: string) => void
+  setQuality: (q: GraphicsQuality) => void
   resetDefaults: () => void
 }
 
@@ -66,8 +71,11 @@ export const useSettings = create<SettingsState>()(
     (set, get) => ({
       lookSensitivity: 1,
       bindings: { ...DEFAULT_BINDINGS },
+      quality: 'smooth',
 
       setSensitivity: (v) => set({ lookSensitivity: Math.min(2.5, Math.max(0.3, v)) }),
+
+      setQuality: (q) => set({ quality: q }),
 
       setBinding: (action, code) => {
         const b = { ...get().bindings }
@@ -77,7 +85,7 @@ export const useSettings = create<SettingsState>()(
         set({ bindings: b })
       },
 
-      resetDefaults: () => set({ lookSensitivity: 1, bindings: { ...DEFAULT_BINDINGS } }),
+      resetDefaults: () => set({ lookSensitivity: 1, bindings: { ...DEFAULT_BINDINGS }, quality: 'smooth' }),
     }),
     { name: 'attackagi-settings' },
   ),
