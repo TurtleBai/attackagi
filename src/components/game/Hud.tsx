@@ -91,6 +91,13 @@ function HudStyles() {
 }
 .hud-march { animation: hudMarch 0.5s linear infinite; }
 
+@keyframes hudHitmark {
+  0% { opacity: 1; transform: scale(1.5); }
+  35% { opacity: 1; transform: scale(1); }
+  100% { opacity: 0; transform: scale(0.9); }
+}
+.hud-hitmark { animation: hudHitmark 0.24s ease-out both; }
+
 @keyframes hudFlash {
   0% { filter: brightness(3) drop-shadow(0 0 8px rgba(255, 255, 255, 0.9)); }
   100% { filter: none; }

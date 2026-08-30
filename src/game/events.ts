@@ -12,6 +12,8 @@ export interface EventMap {
   explosion: { pos: THREE.Vector3; radius: number; kind: 'molotov' | 'rocket' | 'punch' | 'enemy' | 'bossDeath' }
   fireIgnite: { pos: THREE.Vector3; radius: number }
   enemyHit: { pos: THREE.Vector3; kind: EnemyKind }
+  /** shooter-side hit confirmation for the HUD hit marker (red when headshot) */
+  hitConfirm: { headshot: boolean }
   enemyDeath: { pos: THREE.Vector3; kind: EnemyKind }
   shieldBlock: { pos: THREE.Vector3 }
   playerHit: { amount: number }

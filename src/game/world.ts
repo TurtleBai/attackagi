@@ -238,10 +238,12 @@ class World {
     enemy?: Enemy
     dist: number
     point: THREE.Vector3
+    /** true when an enemy was struck in the head zone (top of the hit cylinder) */
+    headshot?: boolean
   } | null {
     const obs = this.raycastObstacles(origin, dir, maxDist)
     let bestDist = obs ? obs.dist : maxDist
-    let result: { kind: 'enemy' | 'shieldBlock' | 'obstacle' | 'boss'; enemy?: Enemy; dist: number; point: THREE.Vector3 } | null =
+    let result: { kind: 'enemy' | 'shieldBlock' | 'obstacle' | 'boss'; enemy?: Enemy; dist: number; point: THREE.Vector3; headshot?: boolean } | null =
       obs ? { kind: 'obstacle', dist: obs.dist, point: obs.point } : null
 
     for (const e of this.enemies.values()) {
@@ -261,7 +263,10 @@ class World {
         }
       }
       bestDist = t
-      result = { kind: 'enemy', enemy: e, dist: t, point }
+      result = {
+        kind: 'enemy', enemy: e, dist: t, point,
+        headshot: point.y >= e.pos.y + e.height * 0.72,
+      }
     }
 
     // boss weak points: lingering punch hands, and head/monitor while vulnerable

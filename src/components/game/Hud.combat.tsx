@@ -97,6 +97,7 @@ function Crosshair() {
         </g>
         {/* center dot */}
         <circle cx={28} cy={28} r={1.7} fill="currentColor" />
+        <HitMarker />
         {/* bat charge ring track (visible whenever bat is out) */}
         <circle
           cx={28} cy={28} r={RING_R} fill="none" stroke="currentColor" strokeWidth={2.5}
@@ -127,6 +128,31 @@ function Crosshair() {
         </span>
       )}
     </div>
+  )
+}
+
+/** Hit-confirmation X around the crosshair: white for body hits, red for headshots. */
+function HitMarker() {
+  const [mark, setMark] = useState<{ seq: number; headshot: boolean } | null>(null)
+  useEffect(
+    () => events.on('hitConfirm', ({ headshot }) => setMark((m) => ({ seq: (m?.seq ?? 0) + 1, headshot }))),
+    [],
+  )
+  if (!mark) return null
+  return (
+    <g
+      key={mark.seq}
+      className="hud-hitmark origin-center"
+      stroke={mark.headshot ? '#f43f5e' : '#ffffff'}
+      strokeWidth={mark.headshot ? 2.6 : 2}
+      strokeLinecap="square"
+      style={mark.headshot ? { filter: 'drop-shadow(0 0 4px rgba(244,63,94,0.9))' } : undefined}
+    >
+      <path d="M17 17l6 6" />
+      <path d="M39 17l-6 6" />
+      <path d="M17 39l6-6" />
+      <path d="M39 39l-6-6" />
+    </g>
   )
 }
 

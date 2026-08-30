@@ -28,6 +28,7 @@ const MOLO_AIM_POS = new THREE.Vector3(0.215, -0.16, -0.385)
 const MOLO_AIM_ROT = new THREE.Euler(-0.5, 0.08, 0.3)
 
 const STRIKE_AT = 0.42 // fraction of the swing when bat damage lands
+const HEADSHOT_MULT = 2 // revolver damage multiplier for head-zone hits
 const THROW_ANIM = 0.42 // seconds
 const CYL_STEP = (Math.PI * 2) / 6 // one revolver chamber
 
@@ -153,9 +154,15 @@ export function Weapons() {
     camera.getWorldDirection(_dir)
     const hit = world.raycastShot(_eye, _dir, PISTOL_RANGE)
     if (hit) {
-      if (hit.kind === 'enemy' && hit.enemy) world.damageEnemy(hit.enemy.id, s.stats.pistolDamage)
-      else if (hit.kind === 'shieldBlock') events.emit('shieldBlock', { pos: hit.point })
-      else if (hit.kind === 'boss') world.damageBoss(s.stats.pistolDamage, hit.point)
+      if (hit.kind === 'enemy' && hit.enemy) {
+        const headshot = hit.headshot === true
+        world.damageEnemy(hit.enemy.id, s.stats.pistolDamage * (headshot ? HEADSHOT_MULT : 1))
+        events.emit('hitConfirm', { headshot })
+      } else if (hit.kind === 'shieldBlock') {
+        events.emit('shieldBlock', { pos: hit.point })
+      } else if (hit.kind === 'boss') {
+        if (world.damageBoss(s.stats.pistolDamage, hit.point)) events.emit('hitConfirm', { headshot: false })
+      }
     }
     rig.pistol.muzzle.getWorldPosition(_p)
     events.emit('shot', { origin: _p.clone(), dir: _dir.clone(), hitPoint: hit ? hit.point : null })
@@ -180,6 +187,7 @@ export function Weapons() {
     const fl = Math.hypot(fx, fz) || 1
     const cosHalf = Math.cos(BAT_ARC / 2)
     const kb = 4 + 8 * charge
+    let connected = false
     for (const e of world.enemies.values()) {
       if (e.hp <= 0 || e.falling) continue
       const dx = e.pos.x - world.player.pos.x
@@ -192,6 +200,7 @@ export function Weapons() {
       _chest.y += e.height * 0.55
       if (world.segmentBlocked(_eye, _chest)) continue
       world.damageEnemy(e.id, dmg)
+      connected = true
       const inv = 1 / Math.max(d, 1e-4)
       e.vel.x += dx * inv * kb
       e.vel.z += dz * inv * kb
@@ -206,7 +215,7 @@ export function Weapons() {
       const dxh = hand.pos.x - world.player.pos.x
       const dzh = hand.pos.z - world.player.pos.z
       if (Math.hypot(dxh, dzh) <= BAT_RANGE + hand.radius) {
-        world.damageBoss(dmg, hand.pos)
+        if (world.damageBoss(dmg, hand.pos)) connected = true
         events.emit('batHit', { pos: hand.pos.clone(), charged: charge })
         hitHand = true
       }
@@ -216,10 +225,11 @@ export function Weapons() {
     if (!hitHand) {
       const hit = world.raycastShot(_eye, _dir, BAT_RANGE)
       if (hit && hit.kind === 'boss') {
-        world.damageBoss(dmg, hit.point)
+        if (world.damageBoss(dmg, hit.point)) connected = true
         events.emit('batHit', { pos: hit.point.clone(), charged: charge })
       }
     }
+    if (connected) events.emit('hitConfirm', { headshot: false })
   }
 
   const releaseBat = () => {
@@ -642,8 +652,9 @@ export function Weapons() {
 
       // liquid slosh opposing the sway + flame flicker
       rig.molotov.liquid.rotation.set(st.swayY * 1.2 + Math.sin(st.vt * 3) * 0.04, 0, -st.swayX * 1.5)
-      rig.molotov.flameMat.opacity = 0.5 + 0.22 * Math.sin(st.vt * 23) + 0.1 * Math.sin(st.vt * 61)
-      rig.molotov.flame.scale.set(1, 0.85 + 0.2 * Math.sin(st.vt * 17 + 1.3), 1)
+      rig.molotov.flameMat.uniforms.uTime.value = st.vt
+      rig.molotov.flameMat.uniforms.uFlick.value = 0.78 + 0.16 * Math.sin(st.vt * 23) + 0.06 * Math.sin(st.vt * 61)
+      rig.molotov.flame.scale.set(1, 0.9 + 0.12 * Math.sin(st.vt * 17 + 1.3), 1)
       rig.molotov.ember.scale.setScalar(1 + 0.14 * Math.sin(st.vt * 31))
     }
   }, FRAME_PRIO.weapons)

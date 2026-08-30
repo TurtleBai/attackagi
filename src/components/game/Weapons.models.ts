@@ -267,7 +267,7 @@ export interface WeaponRig {
     bottle: THREE.Group
     liquid: THREE.Mesh
     flame: THREE.Mesh
-    flameMat: THREE.MeshBasicMaterial
+    flameMat: THREE.ShaderMaterial
     ember: THREE.Mesh
   }
 }
@@ -493,9 +493,33 @@ function buildRig(): WeaponRig {
     metalness: 0, roughness: 1.0, normalScale: new THREE.Vector2(1.2, 1.2),
   })
   const emberMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(3.2, 1.05, 0.22), toneMapped: false })
-  const flameMat = new THREE.MeshBasicMaterial({
-    color: new THREE.Color(2.6, 1.25, 0.32), transparent: true, opacity: 0.7,
-    blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false, side: THREE.DoubleSide,
+  // proper wick flame: teardrop SDF with wobble + hot core on crossed quads
+  // (reads volumetric from any angle — no billboarding). pow-free (Metal NaN rule).
+  const flameMat = new THREE.ShaderMaterial({
+    uniforms: { uTime: { value: 0 }, uFlick: { value: 1 } },
+    vertexShader: /* glsl */ `
+varying vec2 vUv;
+void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+    fragmentShader: /* glsl */ `
+uniform float uTime, uFlick;
+varying vec2 vUv;
+void main(){
+  float y = clamp(vUv.y, 0.0, 1.0);
+  float wob = 0.07 * sin(uTime * 13.0 + y * 9.0) * y + 0.03 * sin(uTime * 29.0 + y * 17.0);
+  float x = vUv.x - 0.5 + wob;
+  float w = 0.30 * (1.0 - y) * (0.35 + 0.65 * smoothstep(0.0, 0.25, y));
+  float body = smoothstep(w, w * 0.35, abs(x));
+  float a = body * smoothstep(1.02, 0.72, y) * smoothstep(0.0, 0.06, y) * uFlick;
+  if (a < 0.01) discard;
+  float core = smoothstep(w * 0.8, 0.0, abs(x)) * smoothstep(0.9, 0.15, y);
+  vec3 col = mix(vec3(1.0, 0.33, 0.05), vec3(1.0, 0.82, 0.32), core);
+  col = mix(col, vec3(1.0, 0.97, 0.82), core * core * 0.8);
+  gl_FragColor = vec4(col * 2.6, a);
+}`,
+    transparent: true,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    side: THREE.DoubleSide,
   })
 
   const glassProfile: THREE.Vector2[] = [
@@ -507,6 +531,37 @@ function buildRig(): WeaponRig {
     [0.0001, 0.006], [0.030, 0.007], [0.039, 0.015], [0.0405, 0.030], [0.0405, 0.088],
     [0.028, 0.098], [0.0001, 0.100],
   ].map(([x, y]) => new THREE.Vector2(x, y))
+
+  // aged paper label with a scrawled XXX — wraps the bottle body
+  const labelCanvas = document.createElement('canvas')
+  labelCanvas.width = 128
+  labelCanvas.height = 64
+  const lctx = labelCanvas.getContext('2d')!
+  lctx.fillStyle = '#c9b98f'
+  lctx.fillRect(0, 0, 128, 64)
+  for (let i = 0; i < 70; i++) {
+    lctx.fillStyle = `rgba(120,100,60,${0.05 + Math.random() * 0.09})`
+    lctx.fillRect(Math.random() * 128, Math.random() * 64, 2 + Math.random() * 7, 1.5)
+  }
+  lctx.strokeStyle = '#42301c'
+  lctx.lineWidth = 5
+  lctx.lineCap = 'round'
+  lctx.beginPath()
+  for (const cx of [24, 64, 104]) {
+    lctx.moveTo(cx - 11, 19)
+    lctx.lineTo(cx + 11, 45)
+    lctx.moveTo(cx + 11, 19)
+    lctx.lineTo(cx - 11, 45)
+  }
+  lctx.stroke()
+  lctx.fillStyle = 'rgba(60,45,25,0.35)'
+  lctx.fillRect(0, 0, 128, 3)
+  lctx.fillRect(0, 61, 128, 3)
+  const labelTex = new THREE.CanvasTexture(labelCanvas)
+  labelTex.colorSpace = THREE.SRGBColorSpace
+  const labelMat = new THREE.MeshStandardMaterial({
+    map: labelTex, roughness: 0.92, metalness: 0.02, side: THREE.DoubleSide,
+  })
 
   const molotovGroup = new THREE.Group()
   const bottle = new THREE.Group()
@@ -524,11 +579,17 @@ function buildRig(): WeaponRig {
       ), 10, 0.009, 8, false),
   ])
   const rag = new THREE.Mesh(ragGeo, ragMat)
-  const ember = new THREE.Mesh(new THREE.SphereGeometry(0.0095, 10, 8), emberMat)
-  ember.position.set(0, 0.246, 0)
-  const flame = new THREE.Mesh(new THREE.ConeGeometry(0.013, 0.045, 10, 1, true), flameMat)
-  flame.position.set(0, 0.272, 0)
-  bottle.add(glass, liquid, rag, ember, flame)
+  const ember = new THREE.Mesh(new THREE.SphereGeometry(0.0075, 10, 8), emberMat)
+  ember.position.set(0, 0.243, 0)
+  const flame = new THREE.Mesh(mergeParts([
+    (() => { const g = new THREE.PlaneGeometry(0.06, 0.095); g.translate(0, 0.0475, 0); return g })(),
+    (() => { const g = new THREE.PlaneGeometry(0.06, 0.095); g.rotateY(Math.PI / 2); g.translate(0, 0.0475, 0); return g })(),
+  ]), flameMat)
+  flame.position.set(0, 0.238, 0)
+  flame.renderOrder = 3
+  const label = new THREE.Mesh(new THREE.CylinderGeometry(0.0455, 0.0455, 0.052, 22, 1, true), labelMat)
+  label.position.set(0, 0.062, 0)
+  bottle.add(glass, liquid, rag, ember, flame, label)
   bottle.position.set(0, -0.1, 0) // hand grips mid-bottle
   molotovGroup.add(bottle)
 
