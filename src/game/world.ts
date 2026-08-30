@@ -263,9 +263,19 @@ class World {
         }
       }
       bestDist = t
+      // headshot = the ray actually passes through the glowing head-display
+      // unit (tight per-kind sphere), not merely the top of the body cylinder
+      const hz = HEADSHOT_ZONE[e.kind]
+      _v1.set(e.pos.x, e.pos.y + hz.y, e.pos.z)
+      if (hz.x) {
+        // sniper's screen sits beside the scope — offset along its local right
+        _v1.x += Math.cos(e.yaw) * hz.x
+        _v1.z += -Math.sin(e.yaw) * hz.x
+      }
+      const headT = raySphere(origin, dir, _v1, hz.r)
       result = {
         kind: 'enemy', enemy: e, dist: t, point,
-        headshot: point.y >= e.pos.y + e.height * 0.72,
+        headshot: headT !== null && headT <= t + 1.2,
       }
     }
 
@@ -360,6 +370,16 @@ class World {
 // scratch vectors (module-local, never leak)
 const _v1 = new THREE.Vector3()
 const _v2 = new THREE.Vector3()
+
+// Head-display hit spheres (feet-relative center height, radius, optional
+// facing-local x offset). Sized to the glowing screen unit + casing so a
+// headshot demands actual aim at the logo, not the upper chest.
+const HEADSHOT_ZONE: Record<EnemyKind, { y: number; r: number; x?: number }> = {
+  melee: { y: 2.02, r: 0.18 },
+  ranger: { y: 1.84, r: 0.17 },
+  tank: { y: 2.04, r: 0.19 },
+  sniper: { y: 1.88, r: 0.14, x: -0.075 },
+}
 
 function rayAabb(origin: THREE.Vector3, dir: THREE.Vector3, center: THREE.Vector3, half: THREE.Vector3): number | null {
   let tmin = -Infinity, tmax = Infinity
