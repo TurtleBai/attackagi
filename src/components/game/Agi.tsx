@@ -45,7 +45,6 @@ const _v3 = new THREE.Vector3()
 const _eb = new THREE.Vector3()
 const _d = new THREE.Vector3()
 const _d2 = new THREE.Vector3()
-const _o = new THREE.Vector3()
 const _f = new THREE.Vector3()
 const _h = new THREE.Vector3()
 const _n = new THREE.Vector3()
@@ -886,7 +885,7 @@ function orientHand(ctl: ArmCtl, hand: THREE.Group, tangent: THREE.Vector3, step
   ctl.fingerDir.copy(_f)
 }
 
-function layoutArm(ctl: ArmCtl, rig: ArmRig, rootPos: THREE.Vector3, step: number): void {
+function layoutArm(ctl: ArmCtl, rig: AgiRig, armIdx: number, rootPos: THREE.Vector3, step: number): void {
   ctl.cur.lerp(ctl.goal, 1 - Math.exp(-ctl.rate * step))
   if (ctl.cur.y < 0.6) ctl.cur.y = 0.6
   // quadratic bezier: shoulder → raised/outward elbow → hand
@@ -905,36 +904,68 @@ function layoutArm(ctl: ArmCtl, rig: ArmRig, rootPos: THREE.Vector3, step: numbe
       a * rootPos.z + b * _eb.z + c * ctl.cur.z,
     )
   }
+  const nJoint = ARM_SEGMENTS - 1
   for (let i = 0; i < ARM_SEGMENTS; i++) {
     const a = ctl.pts[i]
     const b = ctl.pts[i + 1]
     _d.copy(b).sub(a)
     const len = Math.max(0.01, _d.length())
     _d.divideScalar(len)
-    const seg = rig.segs[i]
-    seg.position.copy(a).addScaledVector(_d, len * 0.5)
-    seg.quaternion.setFromUnitVectors(UP, _d)
-    seg.scale.set(1, len, 1)
-    // piston rod running alongside the segment
-    _o.crossVectors(_d, UP)
-    if (_o.lengthSq() < 1e-4) _o.set(1, 0, 0)
-    _o.normalize().multiplyScalar(SEG_RADIUS[i] * 0.85)
-    const rod = rig.pistons[i]
-    rod.position.copy(seg.position).add(_o)
-    rod.quaternion.copy(seg.quaternion)
-    rod.scale.set(1, len * 0.8, 1)
+    // segment (piston rod baked into its geometry): instance of segs[i]
+    _pp.copy(a).addScaledVector(_d, len * 0.5)
+    _q2.setFromUnitVectors(UP, _d)
+    _m4.compose(_pp, _q2, _s.set(1, len, 1))
+    rig.segs[i].setMatrixAt(armIdx, _m4)
     if (i > 0) {
-      const collar = rig.collars[i - 1]
-      collar.position.copy(a)
+      // joint collar (unit radius, xz-scaled per joint) + loop ring on odd joints
       _d2.copy(b).sub(ctl.pts[i - 1]).normalize()
-      collar.quaternion.setFromUnitVectors(UP, _d2)
+      _q2.setFromUnitVectors(UP, _d2)
+      const r = SEG_RADIUS[i]
+      _m4.compose(a, _q2, _s.set(r + 0.24, 1, r + 0.24))
+      rig.collars.setMatrixAt(armIdx * nJoint + (i - 1), _m4)
+      if (i % 2 === 1) {
+        const ls = r + 0.3
+        _m4.compose(a, _q2, _s.set(ls, ls, ls))
+        rig.loops.setMatrixAt(armIdx * 3 + (i - 1) / 2, _m4)
+      }
     }
   }
-  rig.shoulder.position.copy(rootPos)
-  const hand = rig.hand.group
+  _m4.makeTranslation(rootPos.x, rootPos.y, rootPos.z)
+  rig.shoulders.setMatrixAt(armIdx, _m4)
+  const hand = rig.arms[armIdx].hand.group
   hand.position.copy(ctl.cur)
   _d.copy(ctl.pts[ARM_SEGMENTS]).sub(ctl.pts[ARM_SEGMENTS - 1]).normalize()
   orientHand(ctl, hand, _d, step)
+}
+
+/**
+ * Push the finger phalanx group world transforms into the shared instanced
+ * meshes. The instanced meshes are children of `model` (so they hide with it),
+ * and model only ever translates — subtract its position to go world → local.
+ */
+function syncFingerInstances(rig: AgiRig): void {
+  rig.root.updateMatrixWorld(true)
+  const mp = rig.model.position
+  for (let h = 0; h < 2; h++) {
+    const fingers = rig.arms[h].hand.fingers
+    for (let f = 0; f < 4; f++) {
+      const idx = h * 4 + f
+      const fr = fingers[f]
+      writeWorldInstance(rig.fingerLevels[0], idx, fr.root, mp)
+      writeWorldInstance(rig.fingerLevels[1], idx, fr.mid, mp)
+      writeWorldInstance(rig.fingerLevels[2], idx, fr.tip, mp)
+    }
+  }
+  for (const lv of rig.fingerLevels) lv.instanceMatrix.needsUpdate = true
+}
+
+function writeWorldInstance(im: THREE.InstancedMesh, idx: number, o: THREE.Object3D, modelPos: THREE.Vector3): void {
+  _m4.copy(o.matrixWorld)
+  const e = _m4.elements
+  e[12] -= modelPos.x
+  e[13] -= modelPos.y
+  e[14] -= modelPos.z
+  im.setMatrixAt(idx, _m4)
 }
 
 function updateHand(ctl: ArmCtl, rig: ArmRig, step: number): void {
@@ -1002,37 +1033,53 @@ function updateVisuals(S: Local, rig: AgiRig, t: number, step: number): void {
     _root.copy(SHOULDER_LOCAL[i])
     _root.y += bobY
     _root.z += rig.bob.position.z
-    layoutArm(S.arms[i], rig.arms[i], _root, step)
+    layoutArm(S.arms[i], rig, i, _root, step)
     updateHand(S.arms[i], rig.arms[i], step)
-    rig.arms[i].hand.cargo.visible = S.cargoCount[i] > 0
-    for (let b = 0; b < rig.arms[i].hand.cargoBots.length; b++) {
-      rig.arms[i].hand.cargoBots[b].visible = b < S.cargoCount[i]
-    }
+    const hand = rig.arms[i].hand
+    const cc = S.cargoCount[i]
+    hand.cargo.visible = cc > 0
+    hand.cargoBodies.count = cc
+    hand.cargoEyes.count = cc
   }
+  // flush the shared arm instance buffers written by layoutArm
+  for (const im of rig.segs) im.instanceMatrix.needsUpdate = true
+  rig.collars.instanceMatrix.needsUpdate = true
+  rig.loops.instanceMatrix.needsUpdate = true
+  rig.shoulders.instanceMatrix.needsUpdate = true
+  syncFingerInstances(rig)
   // idle machinery: fan, LEDs, reactor
   rig.fan.rotation.x += step * (world.agi.mode === 'fighting' ? 15 : 6)
-  for (const led of rig.ledMats) {
+  for (const led of rig.leds) {
     const on = Math.sin(t * 3.1 + led.phase) > 0.05 ? 1 : 0.22
-    led.mat.color.copy(led.base).multiplyScalar(on)
+    led.mesh.setColorAt(led.index, _c.copy(led.base).multiplyScalar(on))
   }
+  for (const im of rig.ledMeshes) im.instanceColor!.needsUpdate = true
   rig.reactorMat.uniforms.uTime.value = t
   rig.reactorMat.uniforms.uHeat.value =
     world.agi.mode === 'tired' ? 0.45
     : world.agi.mode === 'dying' ? 0.5 + Math.random() * 0.7
     : world.agi.mode === 'dead' ? 0 : 1
-  // spark clusters on grounded hands
+  // spark clusters on grounded hands (one instanced draw each; hidden bits use scale 0)
   for (let i = 0; i < 2; i++) {
     const sp = rig.sparks[i]
     sp.group.visible = S.sparkOn[i]
     if (S.sparkOn[i]) {
       sp.group.position.copy(S.sparkPos[i])
-      for (const bit of sp.bits) {
+      let dirty = false
+      for (let b = 0; b < 7; b++) {
         if (Math.random() < 0.4) {
-          bit.position.set((Math.random() - 0.5) * 3.4, Math.random() * 1.8, (Math.random() - 0.5) * 3.4)
-          bit.scale.setScalar(0.35 + Math.random() * 1.4)
-          bit.visible = Math.random() < 0.88
+          const px = (Math.random() - 0.5) * 3.4
+          const py = Math.random() * 1.8
+          const pz = (Math.random() - 0.5) * 3.4
+          const sc = 0.35 + Math.random() * 1.4
+          const vs = Math.random() < 0.88 ? sc : 0
+          _m4.makeScale(vs, vs, vs)
+          _m4.setPosition(px, py, pz)
+          sp.inst.setMatrixAt(b, _m4)
+          dirty = true
         }
       }
+      if (dirty) sp.inst.instanceMatrix.needsUpdate = true
     }
   }
   // death-beam visual

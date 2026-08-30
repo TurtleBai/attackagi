@@ -330,10 +330,24 @@ function buildRig(): WeaponRig {
   flash.visible = false
   slideGroup.add(slideMain, slideAcc, dots, muzzle, flash)
 
+  // The grip assembly never animates — bake its transform (pos 0,-0.002,0.048;
+  // rot.x −0.30) into the geometries and fold them into the frame/accent meshes.
+  const gripBake = (g: THREE.BufferGeometry) => {
+    g.rotateX(-0.30)
+    g.translate(0, -0.002, 0.048)
+    return g
+  }
+
   const staticMain = new THREE.Mesh(mergeParts([
     (() => { const g = extrudeRR(0.040, 0.035, 0.150, 0.009); g.translate(0, 0.0215, -0.028); return g })(),
     (() => { const g = new THREE.TorusGeometry(0.024, 0.0045, 8, 18, Math.PI * 1.3); g.rotateY(Math.PI / 2); g.rotateX(0.9); g.translate(0, -0.002, -0.005); return g })(), // trigger guard
     box(0.030, 0.012, 0.030, 0, 0.030, 0.062), // beavertail
+    gripBake((() => { // grip core
+      const g = extrudeRR(0.034, 0.055, 0.115, 0.010)
+      g.rotateX(Math.PI / 2)
+      g.translate(0, -0.045, 0)
+      return g
+    })()),
   ]), frameMat)
 
   const staticAcc = new THREE.Mesh(mergeParts([
@@ -343,23 +357,15 @@ function buildRig(): WeaponRig {
     box(0.006, 0.022, 0.0055, 0, -0.004, -0.012, 0.28), // trigger
     (() => { const g = new THREE.CylinderGeometry(0.004, 0.004, 0.044, 8); g.rotateZ(Math.PI / 2); g.translate(0, 0.028, 0.030); return g })(), // takedown pin
     box(0.006, 0.008, 0.012, -0.021, 0.006, 0.024), // mag release
+    gripBake(box(0.040, 0.014, 0.062, 0, -0.104, 0.004)), // grip base plate
   ]), accentMat)
 
-  const gripGroup = new THREE.Group()
-  gripGroup.position.set(0, -0.002, 0.048)
-  gripGroup.rotation.x = -0.30
-  const gripCore = new THREE.Mesh((() => {
-    const g = extrudeRR(0.034, 0.055, 0.115, 0.010)
-    g.rotateX(Math.PI / 2)
-    g.translate(0, -0.045, 0)
-    return g
-  })(), frameMat)
-  const panelL = new THREE.Mesh(box(0.0022, 0.085, 0.046, -0.0185, -0.045, 0), gripMat)
-  const panelR = new THREE.Mesh(box(0.0022, 0.085, 0.046, 0.0185, -0.045, 0), gripMat)
-  const basePlate = new THREE.Mesh(box(0.040, 0.014, 0.062, 0, -0.104, 0.004), accentMat)
-  gripGroup.add(gripCore, panelL, panelR, basePlate)
+  const gripPanels = new THREE.Mesh(mergeParts([
+    gripBake(box(0.0022, 0.085, 0.046, -0.0185, -0.045, 0)),
+    gripBake(box(0.0022, 0.085, 0.046, 0.0185, -0.045, 0)),
+  ]), gripMat)
 
-  pistolGroup.add(slideGroup, staticMain, staticAcc, gripGroup)
+  pistolGroup.add(slideGroup, staticMain, staticAcc, gripPanels)
 
   // ── Baseball bat ── model built along +Y (knob at y=0), pivot lowered to the hands.
   const batMat = new THREE.MeshStandardMaterial({

@@ -13,15 +13,20 @@ import {
   aiMelee, aiRanger, aiSniper, aiTank, lerpAngle,
   MELEE_WINDUP_DUR, SNIPER_TRACK_DUR,
 } from './Enemies.ai'
-import { createEnemyBody, updateOutlinePulse, type EnemyBody } from './Enemies.bodies'
+import { getKindRig, updateOutlinePulse, type KindRig } from './Enemies.bodies'
+import { LOGO_COUNT } from './Enemies.decals'
+import { getEnemyBatcher, resetEnemyBatcher, type LaserSlot } from './Enemies.instanced'
 
 // The 4 robot enemy kinds: spawning (drains world.pendingSpawns), AI state machines
-// (Enemies.ai), articulated procedural bodies (Enemies.bodies), locomotion/attack
-// posing, hit-flash, drop-in falls with dust, and death collapse → world.removeEnemy.
+// (Enemies.ai), locomotion/attack posing against ONE shared template rig per kind
+// (Enemies.bodies), instanced crowd rendering (Enemies.instanced), hit-flash,
+// drop-in falls with dust, and death collapse → world.removeEnemy.
 
 const DYING_TIME = 1.1
 const LAND_TIME = 0.28
 const SEP_RADIUS = 1.3
+
+const KINDS: readonly EnemyKind[] = ['melee', 'ranger', 'tank', 'sniper']
 
 const KIND_DEF: Record<EnemyKind, { hp: number; r: number; h: number }> = {
   melee: { hp: MELEE_HP, r: 0.55, h: 2.1 },
@@ -63,6 +68,7 @@ function drainSpawns(): void {
     e.data.speed = 0
     e.data.steerSide = Math.random() < 0.5 ? -1 : 1
     e.data.desync = Math.random() * 1.4
+    e.data.logo = Math.floor(Math.random() * LOGO_COUNT) // random AI-lab chest emblem
     if (s.kind === 'ranger') e.data.fireT = 1.2 + Math.random() * RANGER_INTERVAL
     if (s.kind === 'sniper') e.data.cycleJitter = Math.random() * 0.6 - 0.2
     if (s.dropFrom > 0) {
@@ -125,7 +131,7 @@ function separate(step: number): void {
   }
 }
 
-// ─── Posing ──────────────────────────────────────────────────────────────────
+// ─── Posing (mutates the kind's SHARED template rig, one enemy at a time) ────
 
 const _wp = new THREE.Vector3()
 const _wt = new THREE.Vector3()
@@ -135,98 +141,111 @@ const easeIn = (t: number) => t * t
 const damp = (cur: number, target: number, rate: number, step: number) =>
   cur + (target - cur) * Math.min(1, rate * step)
 
-function setRot(b: EnemyBody, name: string, dx = 0, dy = 0, dz = 0): void {
-  const n = b.nodes[name]
-  const s = b.base[name]
+// per-enemy pose outputs, consumed by batch.commit() right after poseBody()
+const GLOW: Record<string, number> = {}
+const LASER: LaserSlot = { on: false, ax: 0, ay: 0, az: 0, bx: 0, by: 0, bz: 0, opacity: 0 }
+
+function setRot(r: KindRig, name: string, dx = 0, dy = 0, dz = 0): void {
+  const n = r.nodes[name]
+  const s = r.base[name]
   if (!n || !s) return
   n.rotation.set(s.rx + dx, s.ry + dy, s.rz + dz)
 }
-function setPos(b: EnemyBody, name: string, dx = 0, dy = 0, dz = 0): void {
-  const n = b.nodes[name]
-  const s = b.base[name]
+function setPos(r: KindRig, name: string, dx = 0, dy = 0, dz = 0): void {
+  const n = r.nodes[name]
+  const s = r.base[name]
   if (!n || !s) return
   n.position.set(s.px + dx, s.py + dy, s.pz + dz)
 }
-function setGlow(b: EnemyBody, key: string, mult: number): void {
-  const m = b.glow[key]
-  if (m) m.emissiveIntensity = (b.glowBase[key] ?? 1) * mult
+function setGlow(key: string, mult: number): void {
+  GLOW[key] = mult
 }
 
 // reused root-modifier accumulator (no per-frame allocation)
 const RM = { bobY: 0, tiltX: 0, tiltZ: 0, shakeX: 0, sy: 1, sxz: 1 }
 
-function poseMelee(e: Enemy, b: EnemyBody): void {
+function poseMelee(e: Enemy, r: KindRig): void {
   const t = e.stateT
   if (e.state === 'windup') {
     const k = easeOut(clamp01(t / MELEE_WINDUP_DUR))
-    setRot(b, 'armR', -2.25 * k, 0, -0.45 * k)
-    setRot(b, 'torso', 0, -0.5 * k, 0)
-    setRot(b, 'weapon', 0.7 * k, 0, 0)
-    setGlow(b, 'eye', 1 + 1.6 * k)
-    setGlow(b, 'blade', 1 + 0.8 * k)
+    setRot(r, 'armR', -2.25 * k, 0, -0.45 * k)
+    setRot(r, 'torso', 0, -0.5 * k, 0)
+    setRot(r, 'weapon', 0.7 * k, 0, 0)
+    setGlow('eye', 1 + 1.6 * k)
+    setGlow('blade', 1 + 0.8 * k)
   } else if (e.state === 'swing') {
     const k = easeIn(clamp01(t / 0.2))
-    setRot(b, 'armR', -2.25 + 3.2 * k, 0, -0.45 + 0.45 * k)
-    setRot(b, 'torso', 0.12 * k, -0.5 + 0.95 * k, 0)
-    setRot(b, 'weapon', 0.7 - 0.9 * k, 0, 0)
-    setGlow(b, 'eye', 2.4)
-    setGlow(b, 'blade', 2.2)
+    setRot(r, 'armR', -2.25 + 3.2 * k, 0, -0.45 + 0.45 * k)
+    setRot(r, 'torso', 0.12 * k, -0.5 + 0.95 * k, 0)
+    setRot(r, 'weapon', 0.7 - 0.9 * k, 0, 0)
+    setGlow('eye', 2.4)
+    setGlow('blade', 2.2)
   } else if (e.state === 'cooldown') {
     const k = 1 - clamp01(t / 0.45)
-    setRot(b, 'armR', 0.95 * k, 0, 0)
-    setRot(b, 'torso', 0.12 * k, 0.45 * k, 0)
-    setGlow(b, 'eye', 1)
-    setGlow(b, 'blade', 1)
+    setRot(r, 'armR', 0.95 * k, 0, 0)
+    setRot(r, 'torso', 0.12 * k, 0.45 * k, 0)
+    setGlow('eye', 1)
+    setGlow('blade', 1)
   } else {
-    setGlow(b, 'eye', 1)
-    setGlow(b, 'blade', 1)
+    setGlow('eye', 1)
+    setGlow('blade', 1)
   }
 }
 
-function poseRanger(e: Enemy, b: EnemyBody, step: number, running: boolean): void {
+function poseRanger(e: Enemy, r: KindRig, step: number, running: boolean): void {
   const p = world.player
   const dx = p.pos.x - e.pos.x, dz = p.pos.z - e.pos.z
   const dist = Math.hypot(dx, dz) || 1e-4
   const pitch = Math.atan2(p.pos.y + 1.2 - (e.pos.y + 1.5), dist)
   if (running) e.data.muzzleT = Math.max(0, (e.data.muzzleT ?? 0) - step)
   const mz = (e.data.muzzleT ?? 0) / 0.18
-  setRot(b, 'weapon', -pitch * 0.7 - 0.25 * mz, 0, 0)
-  setPos(b, 'weapon', 0, 0, -0.07 * mz)
-  setRot(b, 'head', -pitch * 0.5, 0, 0)
-  setGlow(b, 'muzzle', 1 + 14 * mz)
-  setGlow(b, 'eye', 1 + 0.6 * mz)
+  setRot(r, 'weapon', -pitch * 0.7 - 0.25 * mz, 0, 0)
+  setPos(r, 'weapon', 0, 0, -0.07 * mz)
+  setRot(r, 'head', -pitch * 0.5, 0, 0)
+  setGlow('muzzle', 1 + 14 * mz)
+  setGlow('eye', 1 + 0.6 * mz)
 }
 
-function poseTank(e: Enemy, b: EnemyBody, step: number): void {
+/**
+ * Shield/arm placement from the persisted lower amount (e.data.shieldLow).
+ * Split out so falling/dying tanks keep a stable shield pose (the rig is shared,
+ * so every node must be written every enemy).
+ */
+function poseTankShield(e: Enemy, r: KindRig): void {
+  const low = e.data.shieldLow ?? (e.shieldActive ? 0 : 1)
+  setRot(r, 'shield', 0.95 * low, 0, 0)
+  setPos(r, 'shield', 0, -0.32 * low, 0.08 * low)
+  setRot(r, 'armL', 0.55 * low, 0, 0.25 * low)
+  setRot(r, 'armR', 0.55 * low, 0, -0.25 * low)
+}
+
+function poseTank(e: Enemy, r: KindRig, step: number): void {
   const low = damp(e.data.shieldLow ?? (e.shieldActive ? 0 : 1), e.shieldActive ? 0 : 1, 6, step)
   e.data.shieldLow = low
-  setRot(b, 'shield', 0.95 * low, 0, 0)
-  setPos(b, 'shield', 0, -0.32 * low, 0.08 * low)
-  setRot(b, 'armL', 0.55 * low, 0, 0.25 * low)
-  setRot(b, 'armR', 0.55 * low, 0, -0.25 * low)
+  poseTankShield(e, r)
   if (e.state === 'windup') {
     const k = clamp01(e.stateT / TANK_WINDUP)
     RM.tiltX += 0.14 * k
     RM.bobY -= 0.1 * k
     RM.shakeX += Math.sin(e.stateT * 46) * 0.02 * k
-    setGlow(b, 'eye', 1 + 2.5 * k)
-    setGlow(b, 'slit', 1 + 2.5 * k)
+    setGlow('eye', 1 + 2.5 * k)
+    setGlow('slit', 1 + 2.5 * k)
   } else if (e.state === 'dash') {
     RM.tiltX += 0.26
-    setGlow(b, 'eye', 3.5)
-    setGlow(b, 'slit', 3.5)
+    setGlow('eye', 3.5)
+    setGlow('slit', 3.5)
   } else if (e.state === 'stagger') {
     RM.tiltX += -0.3 + Math.sin(e.stateT * 18) * 0.06 * Math.max(0, 1 - e.stateT)
     const fl = Math.sin(e.stateT * 34) * 0.5 + 0.5
-    setGlow(b, 'eye', 0.4 + fl * 0.8)
-    setGlow(b, 'slit', 0.4 + fl * 0.8)
+    setGlow('eye', 0.4 + fl * 0.8)
+    setGlow('slit', 0.4 + fl * 0.8)
   } else {
-    setGlow(b, 'eye', 1)
-    setGlow(b, 'slit', 1)
+    setGlow('eye', 1)
+    setGlow('slit', 1)
   }
 }
 
-function poseSniper(e: Enemy, b: EnemyBody): void {
+function poseSniper(e: Enemy, r: KindRig): void {
   const p = world.player
   let pitchAng: number
   if (e.state === 'aim') {
@@ -236,45 +255,40 @@ function poseSniper(e: Enemy, b: EnemyBody): void {
     const dist = Math.hypot(dx, dz) || 1e-4
     pitchAng = Math.atan2(p.pos.y + 1.2 - (e.pos.y + 1.55), dist)
   }
-  const r = (e.data.recoilT ?? 0) / 0.55
-  setRot(b, 'weapon', -pitchAng * 0.8 - 0.5 * r * r, 0, 0)
-  setRot(b, 'head', -pitchAng * 0.4, 0, 0)
-  RM.tiltX -= 0.1 * r * r
-  setGlow(b, 'muzzle', 1 + 10 * r * r)
+  const rc = (e.data.recoilT ?? 0) / 0.55
+  setRot(r, 'weapon', -pitchAng * 0.8 - 0.5 * rc * rc, 0, 0)
+  setRot(r, 'head', -pitchAng * 0.4, 0, 0)
+  RM.tiltX -= 0.1 * rc * rc
+  setGlow('muzzle', 1 + 10 * rc * rc)
   if (e.state === 'track') {
     const k = clamp01(e.stateT / SNIPER_TRACK_DUR)
-    setGlow(b, 'lens', 0.7 + 2.6 * k)
-    setGlow(b, 'eye', 1)
+    setGlow('lens', 0.7 + 2.6 * k)
+    setGlow('eye', 1)
   } else if (e.state === 'aim') {
-    setGlow(b, 'lens', 4 + Math.sin(e.stateT * 30) * 0.6)
-    setGlow(b, 'eye', 2)
+    setGlow('lens', 4 + Math.sin(e.stateT * 30) * 0.6)
+    setGlow('eye', 2)
   } else {
-    setGlow(b, 'lens', 1)
-    setGlow(b, 'eye', 1)
+    setGlow('lens', 1)
+    setGlow('eye', 1)
   }
   // live laser sight: faint while tracking, hard while locked
-  const laser = b.laser
-  const mn = b.nodes.muzzle
-  if (laser && mn) {
-    const show = (e.state === 'track' && e.stateT > 0.35) || e.state === 'aim'
-    laser.visible = show
-    if (show) {
-      mn.updateWorldMatrix(true, false)
-      mn.getWorldPosition(_wp)
-      if (e.state === 'aim') _wt.set(e.data.bx ?? 0, e.data.by ?? 1, e.data.bz ?? 0)
-      else _wt.set(p.pos.x, p.pos.y + 1.2, p.pos.z)
-      const len = _wp.distanceTo(_wt)
-      laser.position.copy(_wp).add(_wt).multiplyScalar(0.5)
-      laser.scale.set(0.022, 0.022, Math.max(0.1, len))
-      laser.lookAt(_wt)
-      const m = laser.material as THREE.MeshBasicMaterial
-      m.opacity = e.state === 'aim' ? 0.5 + Math.sin(world.time * 40) * 0.12 : 0.16
-    }
+  const mn = r.nodes.muzzle
+  const show = !!mn && ((e.state === 'track' && e.stateT > 0.35) || e.state === 'aim')
+  LASER.on = show
+  if (show && mn) {
+    mn.updateWorldMatrix(true, false)
+    mn.getWorldPosition(_wp)
+    if (e.state === 'aim') _wt.set(e.data.bx ?? 0, e.data.by ?? 1, e.data.bz ?? 0)
+    else _wt.set(p.pos.x, p.pos.y + 1.2, p.pos.z)
+    LASER.ax = _wp.x; LASER.ay = _wp.y; LASER.az = _wp.z
+    LASER.bx = _wt.x; LASER.by = _wt.y; LASER.bz = _wt.z
+    LASER.opacity = e.state === 'aim' ? 0.5 + Math.sin(world.time * 40) * 0.12 : 0.16
   }
 }
 
-function poseBody(e: Enemy, b: EnemyBody, step: number, running: boolean): void {
-  const g = b.group
+/** Pose the shared rig for one enemy. Returns the hit-flash value for its slot. */
+function poseBody(e: Enemy, r: KindRig, step: number, running: boolean): number {
+  const g = r.group
   g.position.copy(e.pos)
   g.rotation.y = e.yaw
   RM.bobY = 0
@@ -294,8 +308,10 @@ function poseBody(e: Enemy, b: EnemyBody, step: number, running: boolean): void 
     flash = Math.max(flash, flicker * 0.5)
     deathGlow = flicker * 1.6
   }
-  b.chassis.emissive.setScalar(flash)
-  b.dark.emissive.setScalar(flash * 0.8)
+
+  // per-enemy pose outputs default off; branches below override
+  for (const k of r.glowKeys) GLOW[k] = 1
+  LASER.on = false
 
   // locomotion cycle
   const spd = e.data.speed ?? 0
@@ -308,42 +324,44 @@ function poseBody(e: Enemy, b: EnemyBody, step: number, running: boolean): void 
   const swingAmp = e.kind === 'melee' ? 0.62 : e.kind === 'tank' ? 0.48 : 0.5
   const legSwing = Math.sin(ph) * swingAmp * amp
 
+  // Baseline written EVERY call for EVERY node — the rig is shared across the
+  // kind's enemies, so nothing may leak from the previously posed instance.
+  // (Dying enemies reuse their frozen phase/amp, keeping legs mid-stride.)
+  setRot(r, 'legL', legSwing, 0, 0)
+  setRot(r, 'legR', -legSwing, 0, 0)
+  setRot(r, 'armL', -Math.sin(ph) * 0.35 * amp, 0, 0)
+  setRot(r, 'armR', Math.sin(ph) * 0.3 * amp, 0, 0)
+  setRot(r, 'torso')
+  setRot(r, 'head')
+  setRot(r, 'weapon')
+  setPos(r, 'weapon')
+  if (e.kind === 'tank') poseTankShield(e, r)
+
   if (e.falling) {
     // limbs flail on the way down
-    setRot(b, 'legL', 0.45, 0, 0.12)
-    setRot(b, 'legR', -0.35, 0, -0.12)
-    setRot(b, 'armL', -0.7 + Math.sin(world.time * 9 + e.id) * 0.25, 0, 0.5)
-    setRot(b, 'armR', -0.6 + Math.cos(world.time * 8 + e.id) * 0.25, 0, -0.5)
+    setRot(r, 'legL', 0.45, 0, 0.12)
+    setRot(r, 'legR', -0.35, 0, -0.12)
+    setRot(r, 'armL', -0.7 + Math.sin(world.time * 9 + e.id) * 0.25, 0, 0.5)
+    setRot(r, 'armR', -0.6 + Math.cos(world.time * 8 + e.id) * 0.25, 0, -0.5)
     RM.tiltX = Math.sin(world.time * 3 + e.id * 2.1) * 0.12
-    for (const k in b.glow) setGlow(b, k, 1)
-    if (b.laser) b.laser.visible = false
   } else if (dyingT < 0) {
-    // walk/idle baseline; per-kind overlays refine below
-    setRot(b, 'legL', legSwing, 0, 0)
-    setRot(b, 'legR', -legSwing, 0, 0)
-    setRot(b, 'armL', -Math.sin(ph) * 0.35 * amp, 0, 0)
-    setRot(b, 'armR', Math.sin(ph) * 0.3 * amp, 0, 0)
-    setRot(b, 'torso')
-    setRot(b, 'head')
-    setRot(b, 'weapon')
-    setPos(b, 'weapon')
+    // walk/idle baseline; per-kind overlays refine
     RM.bobY = (1 - Math.cos(ph * 2)) * 0.5 * 0.05 * amp
     RM.tiltZ = Math.sin(world.time * 1.6 + e.id * 1.7) * 0.02
-    if (e.kind === 'melee') poseMelee(e, b)
-    else if (e.kind === 'ranger') poseRanger(e, b, step, running)
-    else if (e.kind === 'tank') poseTank(e, b, step)
-    else poseSniper(e, b)
+    if (e.kind === 'melee') poseMelee(e, r)
+    else if (e.kind === 'ranger') poseRanger(e, r, step, running)
+    else if (e.kind === 'tank') poseTank(e, r, step)
+    else poseSniper(e, r)
   } else {
     // collapse: tip over at the feet, arms out, sink away before removal
     const tip = easeIn(clamp01(dyingT / 0.72))
     RM.tiltX = tip * 1.5 * (e.data.deathTip ?? 1)
     RM.tiltZ = tip * (e.data.deathRoll ?? 0)
     g.position.y = e.pos.y - Math.max(0, dyingT - 0.55) * 1.1
-    setRot(b, 'armL', -0.4 * tip, 0, 0.4 * tip)
-    setRot(b, 'armR', -0.3 * tip, 0, -0.5 * tip)
-    setRot(b, 'head', 0.4 * tip, 0.3 * tip, 0)
-    for (const k in b.glow) setGlow(b, k, deathGlow)
-    if (b.laser) b.laser.visible = false
+    setRot(r, 'armL', -0.4 * tip, 0, 0.4 * tip)
+    setRot(r, 'armR', -0.3 * tip, 0, -0.5 * tip)
+    setRot(r, 'head', 0.4 * tip, 0.3 * tip, 0)
+    for (const k of r.glowKeys) GLOW[k] = deathGlow
   }
 
   // landing squash & stretch
@@ -354,13 +372,14 @@ function poseBody(e: Enemy, b: EnemyBody, step: number, running: boolean): void 
     RM.sxz = 1 + 0.2 * k
   }
 
-  const root = b.nodes.root
-  const rb = b.base.root
+  const root = r.nodes.root
+  const rb = r.base.root
   if (root && rb) {
     root.position.set(rb.px + RM.shakeX, rb.py + RM.bobY, rb.pz)
     root.rotation.set(rb.rx + RM.tiltX, rb.ry, rb.rz + RM.tiltZ)
     root.scale.set(RM.sxz, RM.sy, RM.sxz)
   }
+  return flash
 }
 
 // ─── Dust puffs (landings) ───────────────────────────────────────────────────
@@ -430,29 +449,19 @@ function makeDustPool(parent: THREE.Object3D): DustPool {
 
 const removeList: number[] = []
 
-function destroyBody(root: THREE.Group, b: EnemyBody): void {
-  root.remove(b.group)
-  if (b.laser) root.remove(b.laser)
-  b.dispose()
-}
+// per-frame kind buckets: alive committed first so the straggler outline shells
+// cover exactly the leading instance slots (module scratch, no allocation)
+const aliveByKind: Record<EnemyKind, Enemy[]> = { melee: [], ranger: [], tank: [], sniper: [] }
+const dyingByKind: Record<EnemyKind, Enemy[]> = { melee: [], ranger: [], tank: [], sniper: [] }
 
 export function Enemies() {
   const rootRef = useRef<THREE.Group>(null)
-  const bodiesRef = useRef<Map<number, EnemyBody>>(new Map())
   const dustRef = useRef<DustPool | null>(null)
 
-  // hard reset on run restart (Director owns world.reset(); we clear our visuals)
+  // hard reset on run restart (Director owns world.reset(); we zero our instance counts)
   useEffect(() => {
     const reset = () => {
-      const root = rootRef.current
-      for (const b of bodiesRef.current.values()) {
-        if (root) {
-          root.remove(b.group)
-          if (b.laser) root.remove(b.laser)
-        }
-        b.dispose()
-      }
-      bodiesRef.current.clear()
+      resetEnemyBatcher()
       dustRef.current?.reset()
     }
     const unsub = useGame.subscribe((s, prev) => {
@@ -469,9 +478,10 @@ export function Enemies() {
     const root = rootRef.current
     if (!root) return
     const running = simRunning(useGame.getState().phase)
-    const bodies = bodiesRef.current
     if (!dustRef.current) dustRef.current = makeDustPool(root)
     const dust = dustRef.current
+    const batch = getEnemyBatcher()
+    if (batch.group.parent !== root) root.add(batch.group)
 
     if (running) {
       drainSpawns()
@@ -516,28 +526,29 @@ export function Enemies() {
       for (const id of removeList) world.removeEnemy(id)
     }
 
-    // visual sync: create/pose/prune bodies (pose keeps idling even off-sim)
+    // visual sync: pose the shared rig per enemy and commit into instance slots
+    // (pose keeps idling even off-sim)
     const gs = useGame.getState()
     const highlightStragglers =
       gs.phase === 'wave' && gs.enemiesRemaining > 0 && gs.enemiesRemaining <= STRAGGLER_OUTLINE_COUNT
     updateOutlinePulse(world.time)
+    batch.begin()
+    for (const k of KINDS) {
+      aliveByKind[k].length = 0
+      dyingByKind[k].length = 0
+    }
     for (const e of world.enemies.values()) {
-      let b = bodies.get(e.id)
-      if (!b) {
-        b = createEnemyBody(e.kind)
-        root.add(b.group)
-        if (b.laser) root.add(b.laser)
-        bodies.set(e.id, b)
-      }
-      b.setOutline(highlightStragglers && e.hp > 0)
-      poseBody(e, b, step, running)
+      ;(e.hp > 0 ? aliveByKind : dyingByKind)[e.kind].push(e)
     }
-    for (const [id, b] of bodies) {
-      if (!world.enemies.has(id)) {
-        destroyBody(root, b)
-        bodies.delete(id)
-      }
+    for (const kind of KINDS) {
+      const rig = getKindRig(kind)
+      const alive = aliveByKind[kind]
+      const dying = dyingByKind[kind]
+      for (const e of alive) batch.commit(e, poseBody(e, rig, step, running), GLOW, LASER)
+      for (const e of dying) batch.commit(e, poseBody(e, rig, step, running), GLOW, LASER)
+      batch.setOutline(kind, highlightStragglers ? alive.length : 0)
     }
+    batch.finish()
     dust.update(step)
   }, FRAME_PRIO.enemies)
 
