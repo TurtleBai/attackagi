@@ -29,6 +29,8 @@ const MOLO_AIM_ROT = new THREE.Euler(-0.5, 0.08, 0.3)
 
 const STRIKE_AT = 0.42 // fraction of the swing when bat damage lands
 const HEADSHOT_MULT = 2 // revolver damage multiplier for head-zone hits
+const ADS_Z = -0.26 // camera-local depth of the red dot while aiming
+const ADS_FOV = 60 // zoom while aiming (base 78)
 const THROW_ANIM = 0.42 // seconds
 const CYL_STEP = (Math.PI * 2) / 6 // one revolver chamber
 
@@ -64,6 +66,8 @@ interface LocalState {
   reloadDur: number
   lastShot: number
   aiming: boolean
+  ads: boolean // revolver aim-down-sight held (RMB on slot 1)
+  adsT: number // 0..1 smoothed ADS blend
   throwT: number // -1 idle, else seconds into throw anim
   flashT: number
   recoil: number
@@ -91,6 +95,7 @@ export function Weapons() {
     reloadActive: false, reloadEnd: 0, reloadDur: 1,
     lastShot: -1e9,
     aiming: false,
+    ads: false, adsT: 0,
     throwT: -1,
     flashT: 0,
     recoil: 0,
@@ -110,6 +115,7 @@ export function Weapons() {
     st.reloadActive = false; st.reloadEnd = 0
     st.lastShot = -1e9
     st.aiming = false
+    st.ads = false; st.adsT = 0
     st.throwT = -1
     st.flashT = 0; st.recoil = 0
     st.cylAngle = 0
@@ -273,6 +279,7 @@ export function Weapons() {
     const s = useGame.getState()
     if (s.weapon === slot) return
     st.triggerHeld = false
+    st.ads = false
     st.charging = false
     st.chargeT = 0
     st.charge = 0
@@ -329,7 +336,9 @@ export function Weapons() {
           if (st.swingT < 0 && !st.charging) { st.charging = true; st.chargeT = 0; st.charge = 0 }
         } else if (s.weapon === 3 && st.aiming) throwMolotov()
       } else if (e.button === 2) {
-        if (s.weapon === 3 && !st.aiming && s.molotovs > 0) {
+        if (s.weapon === 1) {
+          st.ads = true // revolver aim-down-sight
+        } else if (s.weapon === 3 && !st.aiming && s.molotovs > 0) {
           st.aiming = true
           s.set({ aimingMolotov: true })
         }
@@ -343,6 +352,7 @@ export function Weapons() {
         releaseBat()
       }
       else if (e.button === 2) {
+        st.ads = false
         if (st.aiming) {
           st.aiming = false
           useGame.getState().set({ aimingMolotov: false })
@@ -358,6 +368,7 @@ export function Weapons() {
       if (document.pointerLockElement) return
       // lock lost: drop transient held inputs
       st.triggerHeld = false
+      st.ads = false
       if (st.charging) {
         st.charging = false
         st.chargeT = 0
@@ -479,12 +490,24 @@ export function Weapons() {
     st.raiseT = Math.min(1, st.raiseT + step * 4.5)
     const raise = (1 - st.raiseT) * (1 - st.raiseT)
 
+    // ADS blend: goal 1 only while held on the equipped revolver mid-combat;
+    // reloads and switches force back to hip
+    const adsGoal = st.ads && s.weapon === 1 && !st.reloadActive && locked && running ? 1 : 0
+    st.adsT += (adsGoal - st.adsT) * (1 - Math.exp(-13 * step))
+    const adsUi = st.adsT > 0.5
+    if (adsUi !== s.adsRevolver) s.set({ adsRevolver: adsUi })
+    const swayK = 1 - 0.85 * st.adsT // sights stay planted while aiming
+
     rig.sway.position.set(
-      st.swayX * 0.35 + bobX,
-      st.swayY * 0.35 + bobY + Math.sin(st.vt * 1.4) * 0.0015 - raise * 0.28,
+      (st.swayX * 0.35 + bobX) * swayK,
+      (st.swayY * 0.35 + bobY + Math.sin(st.vt * 1.4) * 0.0015) * swayK - raise * 0.28,
       0,
     )
-    rig.sway.rotation.set(st.swayY * 0.9 + raise * 0.9, st.swayX * 0.9, -st.swayX * 0.45)
+    rig.sway.rotation.set(
+      st.swayY * 0.9 * swayK + raise * 0.9,
+      st.swayX * 0.9 * swayK,
+      -st.swayX * 0.45 * swayK,
+    )
 
     // ── gameplay timers (early-out unless the sim is running) ──
     if (running) {
@@ -540,16 +563,29 @@ export function Weapons() {
 
       st.recoil *= Math.exp(-9 * step)
       const g = rig.pistol.group
+      // ADS pose: slide the grip so the red-dot sight axis lands dead on the
+      // camera axis (adsOffset is the dot's local position within the group)
+      const ao = rig.pistol.adsOffset
+      const bx = THREE.MathUtils.lerp(PISTOL_POS.x, -ao.x, st.adsT)
+      const by = THREE.MathUtils.lerp(PISTOL_POS.y, -ao.y, st.adsT)
+      const bz = THREE.MathUtils.lerp(PISTOL_POS.z, ADS_Z - ao.z, st.adsT)
+      const rk = 1 - 0.45 * st.adsT // tamer kick while shouldered
       g.position.set(
-        PISTOL_POS.x - dip * 0.055,
-        PISTOL_POS.y - dip * 0.15 + st.recoil * 0.012,
-        PISTOL_POS.z + st.recoil * 0.085 + dip * 0.035,
+        bx - dip * 0.055,
+        by - dip * 0.15 + st.recoil * 0.012 * rk,
+        bz + st.recoil * 0.085 * rk + dip * 0.035,
       )
       g.rotation.set(
-        -dip * 0.78 + st.recoil * 0.28 + flick * 0.1, // magnum muzzle rise
-        0.02 + dip * 0.1,
-        dip * 0.55 + open * 0.26 - flick * 0.16 - st.recoil * 0.05, // roll cylinder-side down
+        (-dip * 0.78 + flick * 0.1) + st.recoil * 0.28 * rk, // magnum muzzle rise
+        0.02 * (1 - st.adsT) + dip * 0.1,
+        dip * 0.55 + open * 0.26 - flick * 0.16 - st.recoil * 0.05 * rk, // roll cylinder-side down
       )
+      // zoom: blends over whatever the Player set this frame (dodge kick included)
+      if (st.adsT > 0.004) {
+        const cam = camera as THREE.PerspectiveCamera
+        cam.fov += (ADS_FOV - cam.fov) * st.adsT
+        cam.updateProjectionMatrix()
+      }
 
       rig.pistol.crane.rotation.z = open * 2.05
       rig.pistol.ejector.position.z = eject * 0.022

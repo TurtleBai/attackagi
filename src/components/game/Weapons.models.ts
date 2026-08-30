@@ -254,6 +254,8 @@ export interface WeaponRig {
     flashMat: THREE.MeshBasicMaterial
     /** cylinder-gap side vents — share flashMat, flicker with the muzzle flash */
     ventFlash: THREE.Mesh
+    /** local position of the red-dot sight axis; ADS centers this on the camera axis */
+    adsOffset: THREE.Vector3
   }
   bat: {
     group: THREE.Group
@@ -328,18 +330,33 @@ function buildRig(): WeaponRig {
   const staticAccent = new THREE.Mesh(mergeParts([
     box(0.005, 0.022, 0.0055, 0, 0.004, -0.017, 0.3), // curved trigger
     box(0.005, 0.010, 0.020, -0.019, 0.055, 0.010), // cylinder release latch (left side)
-    box(0.0055, 0.015, 0.016, 0, 0.0955, -0.196), // front sight blade
-    box(0.0068, 0.0065, 0.014, -0.0088, 0.0985, 0.002), // rear notch L
-    box(0.0068, 0.0065, 0.014, 0.0088, 0.0985, 0.002), // rear notch R
     box(0.007, 0.010, 0.007, 0, -0.086, 0.100), // lanyard mount
     (() => { const g = new THREE.TorusGeometry(0.0068, 0.0018, 6, 14); g.rotateY(Math.PI / 2); g.translate(0, -0.0955, 0.100); return g })(), // lanyard ring
+    // red dot sight: mount riser + open circular housing on the rear of the rib
+    box(0.016, 0.010, 0.030, 0, 0.1035, -0.010), // riser
+    (() => { const g = new THREE.TorusGeometry(0.0135, 0.0032, 10, 24); g.translate(0, 0.118, -0.012); return g })(), // housing ring
+    box(0.006, 0.006, 0.014, 0, 0.1315, -0.012), // top cap / adjustment turret
   ]), accentMat)
 
-  const dots = new THREE.Mesh(mergeParts([
-    (() => { const g = new THREE.SphereGeometry(0.0017, 6, 6); g.translate(-0.0088, 0.1005, 0.0095); return g })(), // rear sight L
-    (() => { const g = new THREE.SphereGeometry(0.0017, 6, 6); g.translate(0.0088, 0.1005, 0.0095); return g })(), // rear sight R
-    (() => { const g = new THREE.SphereGeometry(0.0019, 6, 6); g.translate(0, 0.1, -0.1875); return g })(), // front blade
-  ]), dotMat)
+  // sight glass (faint blue) + the emissive red dot on the sight axis
+  const sightGlassMat = new THREE.MeshBasicMaterial({
+    color: 0x86bfff, transparent: true, opacity: 0.10, depthWrite: false, side: THREE.DoubleSide,
+  })
+  const sightGlass = new THREE.Mesh(new THREE.CircleGeometry(0.0115, 20), sightGlassMat)
+  sightGlass.position.set(0, 0.118, -0.013)
+  sightGlass.renderOrder = 4
+  const redDotMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(5.0, 0.35, 0.3), toneMapped: false })
+  const redDot = new THREE.Mesh(new THREE.CircleGeometry(0.0024, 12), redDotMat)
+  redDot.position.set(0, 0.118, -0.0145)
+  redDot.renderOrder = 5
+  const dots = new THREE.Group()
+  dots.add(sightGlass, redDot)
+  // dotMat retained for the loading-gate glow dot only
+  const gateDot = new THREE.Mesh(new THREE.SphereGeometry(0.0015, 6, 6), dotMat)
+  gateDot.position.set(0.0175, 0.052, 0.028)
+  dots.add(gateDot)
+  // local position of the sight axis: ADS centers this on the camera axis
+  const adsOffset = new THREE.Vector3(0, 0.118, -0.014)
 
   // contoured wood grip — raked back, palm swell, flared butt (never animates)
   const rake = (g: THREE.BufferGeometry) => { g.rotateX(-0.44); g.translate(0, 0.010, 0.046); return g }
@@ -613,7 +630,7 @@ void main(){
     sway,
     pistol: {
       group: pistolGroup, crane: craneGroup, cylinder: cylinderGroup,
-      hammer: hammerGroup, ejector: ejectorGroup, muzzle, flash, flashMat, ventFlash,
+      hammer: hammerGroup, ejector: ejectorGroup, muzzle, flash, flashMat, ventFlash, adsOffset,
     },
     bat: { group: batGroup, inner: batInner, mat: batMat, shell, shellMat },
     molotov: { group: molotovGroup, bottle, liquid, flame, flameMat, ember },

@@ -59,6 +59,7 @@ const RING_C = 2 * Math.PI * RING_R
 function Crosshair() {
   const weapon = useGame((s) => s.weapon)
   const aiming = useGame((s) => s.aimingMolotov)
+  const ads = useGame((s) => s.adsRevolver)
   const ringRef = useRef<SVGCircleElement>(null)
   const groupRef = useRef<SVGGElement>(null)
 
@@ -88,15 +89,16 @@ function Crosshair() {
   return (
     <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2">
       <svg width={56} height={56} viewBox="0 0 56 56" className="text-foreground/90 drop-shadow-[0_0_2px_rgba(0,0,0,0.9)]">
-        {/* ticks */}
-        <g stroke="currentColor" strokeWidth={1.8} strokeLinecap="square" opacity={0.92}>
-          <path d="M28 8v8" />
-          <path d="M28 40v8" />
-          <path d="M8 28h8" />
-          <path d="M40 28h8" />
+        {/* ticks + dot vanish while aiming down the red dot (it IS the reticle) */}
+        <g className={cn('transition-opacity duration-100', ads && 'opacity-0')}>
+          <g stroke="currentColor" strokeWidth={1.8} strokeLinecap="square" opacity={0.92}>
+            <path d="M28 8v8" />
+            <path d="M28 40v8" />
+            <path d="M8 28h8" />
+            <path d="M40 28h8" />
+          </g>
+          <circle cx={28} cy={28} r={1.7} fill="currentColor" />
         </g>
-        {/* center dot */}
-        <circle cx={28} cy={28} r={1.7} fill="currentColor" />
         <HitMarker />
         {/* bat charge ring track (visible whenever bat is out) */}
         <circle
@@ -207,7 +209,7 @@ function HpPanel() {
 // ─── Weapon panel + slot pills (bottom-right) ────────────────────────────────
 
 const WEAPON_META: Record<WeaponSlot, { name: string; hint: string; tag: string }> = {
-  1: { name: 'R6 JUDGE', hint: 'HOLD LMB · R RELOAD', tag: 'RVL' },
+  1: { name: 'R6 JUDGE', hint: 'HOLD LMB · RMB AIM · R RELOAD', tag: 'RVL' },
   2: { name: 'CQC BAT', hint: 'HOLD LMB · CHARGE ×3', tag: 'BAT' },
   3: { name: 'MOLOTOV', hint: 'RMB AIM · LMB THROW', tag: 'MLT' },
 }

@@ -42,6 +42,7 @@ interface GameState {
   reloading: boolean
   batCharge: number // 0..1 while holding, for HUD ring
   aimingMolotov: boolean
+  adsRevolver: boolean // revolver aim-down-sight active (HUD hides the crosshair)
   ownedBuffs: OwnedBuffs
   buffChoices: BuffId[] | null // non-null during buffSelect
   stats: PlayerStats
@@ -79,6 +80,7 @@ const initialRun = () => {
     reloading: false,
     batCharge: 0,
     aimingMolotov: false,
+    adsRevolver: false,
     ownedBuffs: {} as OwnedBuffs,
     buffChoices: null,
     stats,
