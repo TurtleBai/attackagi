@@ -40,7 +40,7 @@ export const BAT_DAMAGE = 30
 export const BAT_RANGE = 3.0
 export const BAT_ARC = Math.PI * 0.7 // horizontal arc centered on view
 export const BAT_SWING_TIME = 0.32
-export const BAT_CHARGE_TIME = 5.0 // seconds to reach max charge
+export const BAT_CHARGE_TIME = 2.5 // seconds to reach max charge
 export const BAT_CHARGED_MULT = 3.0 // max-charge damage multiplier
 
 // ─── Molotov ─────────────────────────────────────────────────────────────────
@@ -84,6 +84,9 @@ export const SNIPER_HP = 22
 export const SNIPER_DAMAGE = 26
 export const SNIPER_INTERVAL = 5.0
 export const SNIPER_AIM_TIME = 1.4 // red line telegraph duration
+
+/** When this many (or fewer) enemies remain in a wave, stragglers get a glowing outline. */
+export const STRAGGLER_OUTLINE_COUNT = 5
 
 // ─── Waves: [melee, ranger, tank, sniper] ────────────────────────────────────
 export const WAVES: ReadonlyArray<readonly [number, number, number, number]> = [

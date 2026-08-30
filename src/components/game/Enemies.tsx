@@ -4,7 +4,7 @@ import { useEffect, useRef } from 'react'
 import * as THREE from 'three'
 import {
   FRAME_PRIO, GRAVITY,
-  MELEE_HP, RANGER_HP, RANGER_INTERVAL, SNIPER_HP, TANK_HP, TANK_WINDUP,
+  MELEE_HP, RANGER_HP, RANGER_INTERVAL, SNIPER_HP, STRAGGLER_OUTLINE_COUNT, TANK_HP, TANK_WINDUP,
 } from '@/game/constants'
 import { simRunning, useGame } from '@/game/store'
 import { world } from '@/game/world'
@@ -13,7 +13,7 @@ import {
   aiMelee, aiRanger, aiSniper, aiTank, lerpAngle,
   MELEE_WINDUP_DUR, SNIPER_TRACK_DUR,
 } from './Enemies.ai'
-import { createEnemyBody, type EnemyBody } from './Enemies.bodies'
+import { createEnemyBody, updateOutlinePulse, type EnemyBody } from './Enemies.bodies'
 
 // The 4 robot enemy kinds: spawning (drains world.pendingSpawns), AI state machines
 // (Enemies.ai), articulated procedural bodies (Enemies.bodies), locomotion/attack
@@ -517,6 +517,10 @@ export function Enemies() {
     }
 
     // visual sync: create/pose/prune bodies (pose keeps idling even off-sim)
+    const gs = useGame.getState()
+    const highlightStragglers =
+      gs.phase === 'wave' && gs.enemiesRemaining > 0 && gs.enemiesRemaining <= STRAGGLER_OUTLINE_COUNT
+    updateOutlinePulse(world.time)
     for (const e of world.enemies.values()) {
       let b = bodies.get(e.id)
       if (!b) {
@@ -525,6 +529,7 @@ export function Enemies() {
         if (b.laser) root.add(b.laser)
         bodies.set(e.id, b)
       }
+      b.setOutline(highlightStragglers && e.hp > 0)
       poseBody(e, b, step, running)
     }
     for (const [id, b] of bodies) {

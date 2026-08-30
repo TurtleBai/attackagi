@@ -175,7 +175,10 @@ uniform float uTime, uFade, uSeed;
 varying vec2 vUv;
 ${NOISE2}
 void main(){
-  vec2 p = vUv * 2.0 - 1.0;
+  // quad is cropped to radius*2.0 (was *2.3) by FirePatches; rescale so the
+  // glow field keeps its exact old world-space footprint (2.0/2.3 = 0.8696) —
+  // the trimmed outer band had alpha < 2% and was pure overdraw
+  vec2 p = (vUv * 2.0 - 1.0) * 0.8696;
   float r = length(p);
   if (r > 1.0) discard;
   float g = 1.0 - r;

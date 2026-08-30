@@ -37,7 +37,10 @@ function Lighting() {
         intensity={1.35}
         color={0xfff2df}
         castShadow
-        shadow-mapSize={[2048, 2048]}
+        // 1536 keeps PCFSoft shadows visually equivalent at 44% less shadow-map
+        // fill. Frustum stays ±55: enemies dropped from the AGI's hands high
+        // above the rim must keep their shadows (no pop-in), so don't tighten.
+        shadow-mapSize={[1536, 1536]}
         shadow-bias={-0.0004}
         shadow-normalBias={0.03}
         shadow-camera-left={-55}
@@ -58,7 +61,9 @@ export default function GameCanvas() {
       shadows
       dpr={[1, 1.5]}
       camera={{ fov: 78, near: 0.08, far: 400, position: [0, 1.7, 10] }}
-      gl={{ powerPreference: 'high-performance' }}
+      // canvas MSAA is wasted work: every frame ends as the composer's
+      // fullscreen quad — AA comes from EffectComposer multisampling instead
+      gl={{ powerPreference: 'high-performance', antialias: false }}
       onCreated={({ gl, scene, camera }) => {
         gl.toneMapping = THREE.ACESFilmicToneMapping
         scene.background = new THREE.Color(0x0b0e1a)
@@ -81,9 +86,12 @@ export default function GameCanvas() {
         <Vfx />
       </Suspense>
       <Director />
-      <EffectComposer>
+      {/* multisampling 4 (default is 8) halves MSAA resolve cost on the HDR
+          buffer at near-identical edge quality; Bloom levels 6 (default 8)
+          drops the two smallest, barely-visible mip passes */}
+      <EffectComposer multisampling={4}>
         <N8AO aoRadius={2.2} intensity={3.2} distanceFalloff={1} quality="performance" halfRes />
-        <Bloom mipmapBlur luminanceThreshold={1.0} intensity={0.85} />
+        <Bloom mipmapBlur levels={6} luminanceThreshold={1.0} intensity={0.85} />
         <Vignette darkness={0.72} offset={0.28} />
       </EffectComposer>
     </Canvas>

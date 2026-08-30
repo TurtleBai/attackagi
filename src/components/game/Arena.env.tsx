@@ -2,20 +2,31 @@
 import { useFrame } from '@react-three/fiber'
 import { useMemo, useRef } from 'react'
 import * as THREE from 'three'
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js'
 import { ARENA_RADIUS, FRAME_PRIO } from '@/game/constants'
 import { darkMetalMaterial } from '@/game/gfx/materials'
 import { panelTextures, seededRandom } from '@/game/gfx/textures'
 import { dishGeometry, parapetGeometry, scaleUvs } from './Arena.geo'
-import { dotTexture, hazardStripeTexture, skylineTexture, softTexture } from './Arena.textures'
+import { dotTexture, hazardStripeTexture, skylineAtlasTexture, softTexture } from './Arena.textures'
 
-// Environment shell: beveled parapet ring with warning stripes + inset lights,
-// support trusses + hull skirt under the platform edge, a soft void gradient,
-// distant instanced city towers, drifting fog cards, dim stars, a rotating
-// radar dish + blinking antennas, and two flickering rim lights.
+// Environment shell, batched for draw calls:
+// - parapet ring: 3 instanced draws (segments / stripe plates / light bars)
+// - ALL static dark framework (under-platform columns, diagonals, greeble
+//   blocks, radar base+mast, antenna poles+crossbars) merged into ONE mesh
+// - radar head (dish+feed+counterweight) merged into one rotating mesh
+// - the 3 blinking beacons: one instanced mesh, blink computed in-shader
+// - skyline: ONE instanced draw for all 90 towers — both texture variants live
+//   in a single atlas, picked per-instance via an aTexSel uv offset
+// - fog cards: one instanced mesh, cylindrically billboarded per frame
+// - void shell: gradient cylinder + bottom cap merged into one draw
+// Shadow audit: only the parapet ring casts here (large rim structure);
+// greebles, masts, dish and sprites never cast.
 
 const SEG_N = 56
 const PARAPET_R = ARENA_RADIUS + 0.65
 const FOG_COLOR = 0x0b0e1a
+const CLOUD_N = 9
+const RADAR_A = 3.9
 
 const _m = new THREE.Matrix4()
 const _m2 = new THREE.Matrix4()
@@ -24,17 +35,14 @@ const _p = new THREE.Vector3()
 const _s = new THREE.Vector3()
 const _e = new THREE.Euler()
 
-interface CloudSpec { mesh: THREE.Mesh; angle: number; radius: number; speed: number; y: number }
-interface BeaconSpec { mat: THREE.MeshBasicMaterial; phase: number; period: number }
+interface CloudSpec { angle: number; radius: number; speed: number; y: number }
 interface FlickerLight { light: THREE.PointLight; base: number; phase: number }
 
 function buildEnv() {
   const group = new THREE.Group()
   const dark = darkMetalMaterial()
   const clouds: CloudSpec[] = []
-  const beacons: BeaconSpec[] = []
   const lights: FlickerLight[] = []
-  let radarHead: THREE.Group | null = null
 
   // ── Parapet ring ───────────────────────────────────────────────────────────
   const segW = (Math.PI * 2 * PARAPET_R) / SEG_N - 0.16
@@ -68,7 +76,7 @@ function buildEnv() {
   }
   group.add(parapet, stripes, bars)
 
-  // ── Under-structure: skirt, columns, diagonal struts, greeble blocks ───────
+  // ── Hull skirt under the platform edge ─────────────────────────────────────
   const panelDark = panelTextures('dark')
   const skirtMat = new THREE.MeshStandardMaterial({
     map: panelDark.map, normalMap: panelDark.normalMap, roughnessMap: panelDark.roughnessMap,
@@ -81,35 +89,98 @@ function buildEnv() {
   skirt.position.y = -1.28
   group.add(skirt)
 
-  const colGeo = new THREE.BoxGeometry(0.34, 5.6, 0.34)
-  const cols = new THREE.InstancedMesh(colGeo, dark, 28)
-  const diagGeo = new THREE.BoxGeometry(0.18, 5.4, 0.18)
-  const diags = new THREE.InstancedMesh(diagGeo, dark, 28)
-  const grebGeo = new THREE.BoxGeometry(1.5, 0.65, 0.85)
-  const grebs = new THREE.InstancedMesh(grebGeo, dark, 24)
+  // ── ONE merged static mesh: under-structure + radar/antenna framework ──────
+  // (columns, diagonal struts, greeble blocks, radar base+mast, antenna
+  // poles+crossbars — all share the dark-metal material and never move)
+  const statics: THREE.BufferGeometry[] = []
+  const addStatic = (g: THREE.BufferGeometry, m: THREE.Matrix4) => { statics.push(g.applyMatrix4(m)) }
   const rndU = seededRandom(90210)
   for (let i = 0; i < 28; i++) {
     const a = (i / 28) * Math.PI * 2
-    _p.set(Math.cos(a) * 40.6, -4.9, Math.sin(a) * 40.6)
     _q.setFromEuler(_e.set(0, Math.PI / 2 - a, 0))
-    cols.setMatrixAt(i, _m.compose(_p, _q, _s.set(1, 1, 1)))
+    addStatic(new THREE.BoxGeometry(0.34, 5.6, 0.34),
+      _m.compose(_p.set(Math.cos(a) * 40.6, -4.9, Math.sin(a) * 40.6), _q, _s.set(1, 1, 1)))
     const am = a + Math.PI / 28
-    _p.set(Math.cos(am) * 40.7, -4.4, Math.sin(am) * 40.7)
     _e.set(0, Math.PI / 2 - am, i % 2 === 0 ? 0.74 : -0.74)
     _e.order = 'YZX'
     _q.setFromEuler(_e)
-    diags.setMatrixAt(i, _m.compose(_p, _q, _s.set(1, 1, 1)))
     _e.order = 'XYZ'
+    addStatic(new THREE.BoxGeometry(0.18, 5.4, 0.18),
+      _m.compose(_p.set(Math.cos(am) * 40.7, -4.4, Math.sin(am) * 40.7), _q, _s.set(1, 1, 1)))
   }
   for (let i = 0; i < 24; i++) {
     const a = (i / 24) * Math.PI * 2 + 0.09
-    _p.set(Math.cos(a) * 39.4, -3.1 - rndU() * 0.8, Math.sin(a) * 39.4)
     _q.setFromEuler(_e.set(0, Math.PI / 2 - a, 0))
-    grebs.setMatrixAt(i, _m.compose(_p, _q, _s.set(1, 1 + rndU() * 0.6, 1)))
+    addStatic(new THREE.BoxGeometry(1.5, 0.65, 0.85),
+      _m.compose(
+        _p.set(Math.cos(a) * 39.4, -3.1 - rndU() * 0.8, Math.sin(a) * 39.4),
+        _q, _s.set(1, 1 + rndU() * 0.6, 1),
+      ))
   }
-  group.add(cols, diags, grebs)
+  // radar base + mast on the parapet cap
+  const radarPos = new THREE.Vector3(Math.cos(RADAR_A) * 42.7, 1.06, Math.sin(RADAR_A) * 42.7)
+  addStatic(new THREE.CylinderGeometry(0.42, 0.5, 0.5, 10),
+    _m.makeTranslation(radarPos.x, radarPos.y + 0.25, radarPos.z))
+  addStatic(new THREE.BoxGeometry(0.16, 2.4, 0.16),
+    _m.makeTranslation(radarPos.x, radarPos.y + 1.6, radarPos.z))
+  // antenna masts
+  for (const aA of [1.15, 5.55] as const) {
+    const bx = Math.cos(aA) * 42.7, bz = Math.sin(aA) * 42.7
+    addStatic(new THREE.CylinderGeometry(0.045, 0.07, 3.4, 8), _m.makeTranslation(bx, 1.06 + 1.7, bz))
+    addStatic(new THREE.BoxGeometry(0.7, 0.05, 0.05), _m.makeTranslation(bx, 1.06 + 2.9, bz))
+    _q.setFromEuler(_e.set(0, 0.8, 0))
+    addStatic(new THREE.BoxGeometry(0.5, 0.05, 0.05),
+      _m.compose(_p.set(bx, 1.06 + 2.5, bz), _q, _s.set(1, 1, 1)))
+  }
+  const staticDark = new THREE.Mesh(mergeGeometries(statics, false)!, dark)
+  group.add(staticDark)
 
-  // ── Void: soft vertical gradient, never pure black ─────────────────────────
+  // ── Rotating radar head: dish + feed + counterweight merged to one mesh ────
+  const feedGeo = new THREE.CylinderGeometry(0.02, 0.02, 0.9, 6)
+  feedGeo.rotateX(-1.05)
+  feedGeo.translate(0, Math.cos(1.05) * 0.45, Math.sin(1.05) * 0.45)
+  const radarHead = new THREE.Mesh(mergeGeometries([
+    dishGeometry().rotateX(-1.05),
+    feedGeo,
+    new THREE.BoxGeometry(0.3, 0.24, 0.5).translate(0, -0.1, -0.5),
+  ], false)!, dark)
+  radarHead.position.set(radarPos.x, radarPos.y + 2.86, radarPos.z)
+  group.add(radarHead)
+
+  // ── Blinking beacons: one instanced mesh, blink evaluated in-shader ────────
+  const beaconGeo = new THREE.SphereGeometry(0.09, 10, 8)
+  beaconGeo.setAttribute('aPhase', new THREE.InstancedBufferAttribute(new Float32Array([0, 0.6, 1.2]), 1))
+  beaconGeo.setAttribute('aPeriod', new THREE.InstancedBufferAttribute(new Float32Array([1.7, 2.3, 2.3]), 1))
+  const beaconMat = new THREE.ShaderMaterial({
+    uniforms: { uTime: { value: 0 } },
+    vertexShader: /* glsl */ `
+      attribute float aPhase; attribute float aPeriod;
+      uniform float uTime;
+      varying float vK;
+      void main() {
+        // sin^6 pulse, multiplied out — no pow() (base can be exactly 0)
+        float s = max(sin((uTime / aPeriod + aPhase) * 6.2831853), 0.0);
+        float s2 = s * s;
+        vK = s2 * s2 * s2;
+        #ifdef USE_INSTANCING
+          gl_Position = projectionMatrix * modelViewMatrix * instanceMatrix * vec4(position, 1.0);
+        #else
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        #endif
+      }`,
+    fragmentShader: /* glsl */ `
+      varying float vK;
+      void main() {
+        gl_FragColor = vec4(0.25 + vK * 2.4, 0.05 + vK * 0.35, 0.05 + vK * 0.3, 1.0);
+      }`,
+  })
+  const beacons = new THREE.InstancedMesh(beaconGeo, beaconMat, 3)
+  beacons.setMatrixAt(0, _m.makeTranslation(radarPos.x, 1.06 + 3.05, radarPos.z))
+  beacons.setMatrixAt(1, _m.makeTranslation(Math.cos(1.15) * 42.7, 1.06 + 3.45, Math.sin(1.15) * 42.7))
+  beacons.setMatrixAt(2, _m.makeTranslation(Math.cos(5.55) * 42.7, 1.06 + 3.45, Math.sin(5.55) * 42.7))
+  group.add(beacons)
+
+  // ── Void: soft vertical gradient cylinder + bottom cap, one draw ───────────
   const voidMat = new THREE.ShaderMaterial({
     side: THREE.BackSide,
     depthWrite: true,
@@ -131,21 +202,35 @@ function buildEnv() {
         gl_FragColor = vec4(mix(uBot, uTop, pow(max(h, 1e-5), 1.5)), 1.0);
       }`,
   })
-  const voidCyl = new THREE.Mesh(new THREE.CylinderGeometry(175, 175, 170, 48, 1, true), voidMat)
-  voidCyl.position.y = -72
-  const voidCap = new THREE.Mesh(
-    new THREE.CircleGeometry(176, 48).rotateX(-Math.PI / 2),
-    new THREE.MeshBasicMaterial({ color: 0x04050c, fog: false }),
-  )
-  voidCap.position.y = -156
-  group.add(voidCyl, voidCap)
+  // cap faces −Y so its BACK side shows from above; at vY=-84 the gradient
+  // evaluates to uBot — identical to the old dedicated cap color
+  const voidGeo = mergeGeometries([
+    new THREE.CylinderGeometry(175, 175, 170, 48, 1, true),
+    new THREE.CircleGeometry(176, 48).rotateX(Math.PI / 2).translate(0, -84, 0),
+  ], false)!
+  const voidShell = new THREE.Mesh(voidGeo, voidMat)
+  voidShell.position.y = -72
+  group.add(voidShell)
 
-  // ── Distant city skyline (instanced towers, sparse lit windows) ────────────
+  // ── Distant city skyline: ONE instanced draw, atlas picks the variant ──────
+  const towerGeo = new THREE.BoxGeometry(1, 1, 1).translate(0, 0.5, 0)
+  const towerMat = new THREE.MeshBasicMaterial({ map: skylineAtlasTexture(6100, 6177) })
+  towerMat.customProgramCacheKey = () => 'arenaSkylineAtlas'
+  towerMat.onBeforeCompile = (shader) => {
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', '#include <common>\nattribute float aTexSel;')
+      .replace(
+        '#include <uv_vertex>',
+        `#include <uv_vertex>
+        #ifdef USE_MAP
+          vMapUv.x = vMapUv.x * 0.5 + aTexSel * 0.5;
+        #endif`,
+      )
+  }
+  const towers = new THREE.InstancedMesh(towerGeo, towerMat, 90)
+  const towerSel = new Float32Array(90)
+  let ti = 0
   for (let v = 0; v < 2; v++) {
-    const boxGeo = new THREE.BoxGeometry(1, 1, 1).translate(0, 0.5, 0)
-    const mat = new THREE.MeshBasicMaterial({ map: skylineTexture(6100 + v * 77) })
-    const towers = new THREE.InstancedMesh(boxGeo, mat, 45)
-    towers.frustumCulled = false
     const rnd = seededRandom(4400 + v * 13)
     for (let i = 0; i < 45; i++) {
       const a = rnd() * Math.PI * 2
@@ -153,31 +238,32 @@ function buildEnv() {
       const h = 10 + Math.pow(rnd(), 1.4) * 40
       _p.set(Math.cos(a) * r, -48 + rnd() * 18, Math.sin(a) * r)
       _q.setFromEuler(_e.set(0, rnd() * Math.PI, 0))
-      towers.setMatrixAt(i, _m.compose(_p, _q, _s.set(6 + rnd() * 9, h, 6 + rnd() * 9)))
+      towerSel[ti] = v
+      towers.setMatrixAt(ti++, _m.compose(_p, _q, _s.set(6 + rnd() * 9, h, 6 + rnd() * 9)))
     }
-    towers.instanceMatrix.needsUpdate = true
-    group.add(towers)
   }
+  towerGeo.setAttribute('aTexSel', new THREE.InstancedBufferAttribute(towerSel, 1))
+  group.add(towers)
 
-  // ── Drifting fog/cloud cards ───────────────────────────────────────────────
+  // ── Drifting fog/cloud cards: one instanced mesh, billboarded per frame ────
   const cloudMat = new THREE.MeshBasicMaterial({
     map: softTexture(), transparent: true, opacity: 0.13, depthWrite: false,
     color: 0x8a9cc8,
   })
   const cloudGeo = new THREE.PlaneGeometry(70, 20)
+  const cloudsIM = new THREE.InstancedMesh(cloudGeo, cloudMat, CLOUD_N)
+  cloudsIM.renderOrder = 2
+  cloudsIM.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
   const rndC = seededRandom(777)
-  for (let i = 0; i < 9; i++) {
-    const mesh = new THREE.Mesh(cloudGeo, cloudMat)
-    mesh.renderOrder = 2
+  for (let i = 0; i < CLOUD_N; i++) {
     clouds.push({
-      mesh,
-      angle: (i / 9) * Math.PI * 2 + rndC(),
+      angle: (i / CLOUD_N) * Math.PI * 2 + rndC(),
       radius: 75 + rndC() * 45,
       speed: (0.006 + rndC() * 0.01) * (i % 2 === 0 ? 1 : -1),
       y: -14 + rndC() * 11,
     })
-    group.add(mesh)
   }
+  group.add(cloudsIM)
 
   // ── Dim stars ──────────────────────────────────────────────────────────────
   const starN = 600
@@ -206,54 +292,6 @@ function buildEnv() {
   }))
   group.add(stars)
 
-  // ── Radar dish + antenna masts on the parapet cap ──────────────────────────
-  const makeBeacon = (phase: number, period: number) => {
-    const mat = new THREE.MeshBasicMaterial({ toneMapped: false })
-    beacons.push({ mat, phase, period })
-    return new THREE.Mesh(new THREE.SphereGeometry(0.09, 10, 8), mat)
-  }
-  {
-    const aR = 3.9
-    const radar = new THREE.Group()
-    radar.position.set(Math.cos(aR) * 42.7, 1.06, Math.sin(aR) * 42.7)
-    const base = new THREE.Mesh(new THREE.CylinderGeometry(0.42, 0.5, 0.5, 10), dark)
-    base.position.y = 0.25
-    const mast = new THREE.Mesh(new THREE.BoxGeometry(0.16, 2.4, 0.16), dark)
-    mast.position.y = 1.6
-    mast.castShadow = true
-    radarHead = new THREE.Group()
-    radarHead.position.y = 2.86
-    const dish = new THREE.Mesh(dishGeometry(), dark)
-    dish.rotation.x = -1.05
-    dish.castShadow = true
-    const feed = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 0.9, 6), dark)
-    feed.rotation.x = -1.05
-    feed.position.set(0, Math.cos(1.05) * 0.45, Math.sin(1.05) * 0.45)
-    const counter = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.24, 0.5), dark)
-    counter.position.set(0, -0.1, -0.5)
-    radarHead.add(dish, feed, counter)
-    const beacon = makeBeacon(0, 1.7)
-    beacon.position.y = 3.05
-    radar.add(base, mast, radarHead, beacon)
-    group.add(radar)
-  }
-  for (const [aA, phase] of [[1.15, 0.6], [5.55, 1.2]] as const) {
-    const mastG = new THREE.Group()
-    mastG.position.set(Math.cos(aA) * 42.7, 1.06, Math.sin(aA) * 42.7)
-    const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.07, 3.4, 8), dark)
-    pole.position.y = 1.7
-    pole.castShadow = true
-    const cross1 = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.05, 0.05), dark)
-    cross1.position.y = 2.9
-    const cross2 = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.05, 0.05), dark)
-    cross2.position.y = 2.5
-    cross2.rotation.y = 0.8
-    const beacon = makeBeacon(phase, 2.3)
-    beacon.position.y = 3.45
-    mastG.add(pole, cross1, cross2, beacon)
-    group.add(mastG)
-  }
-
   // ── Flickering rim lights ──────────────────────────────────────────────────
   for (const [aL, color, base, phase] of [
     [0.0, 0xffa251, 34, 0.0],
@@ -265,13 +303,13 @@ function buildEnv() {
     group.add(light)
   }
 
-  for (const im of [parapet, stripes, bars, cols, diags, grebs]) {
+  for (const im of [parapet, stripes, bars, beacons, towers, cloudsIM]) {
     im.instanceMatrix.needsUpdate = true
     // instance transforms spread far from the geometry origin
     im.frustumCulled = false
   }
 
-  return { group, clouds, beacons, lights, radarHead: radarHead as THREE.Group | null }
+  return { group, clouds, cloudsIM, beaconMat, lights, radarHead }
 }
 
 export function ArenaEnviron() {
@@ -283,26 +321,25 @@ export function ArenaEnviron() {
     t.current += step
     const time = t.current
     // slow radar sweep (pure visual idle animation — runs in every phase)
-    if (built.radarHead) built.radarHead.rotation.y += step * 0.45
-    // beacon blinks
-    for (const b of built.beacons) {
-      const k = Math.pow(Math.max(0, Math.sin((time / b.period + b.phase) * Math.PI * 2)), 6)
-      b.mat.color.setRGB(0.25 + k * 2.4, 0.05 + k * 0.35, 0.05 + k * 0.3)
-    }
+    built.radarHead.rotation.y += step * 0.45
+    // beacon blinks resolve in the shader — just feed the clock
+    built.beaconMat.uniforms.uTime.value = time
     // rim light flicker
     for (const f of built.lights) {
       const n = 0.5 + 0.5 * Math.sin(time * 11 + f.phase + Math.sin(time * 23 + f.phase * 3) * 1.6)
       f.light.intensity = f.base * (0.66 + 0.34 * n)
     }
-    // cloud drift + cylindrical billboard toward camera
+    // cloud drift + cylindrical billboard toward camera (per-instance matrices)
     const cam = state.camera
-    for (const c of built.clouds) {
+    for (let i = 0; i < CLOUD_N; i++) {
+      const c = built.clouds[i]
       c.angle += c.speed * step
       const x = Math.cos(c.angle) * c.radius
       const z = Math.sin(c.angle) * c.radius
-      c.mesh.position.set(x, c.y, z)
-      c.mesh.rotation.y = Math.atan2(cam.position.x - x, cam.position.z - z)
+      _q.setFromEuler(_e.set(0, Math.atan2(cam.position.x - x, cam.position.z - z), 0))
+      built.cloudsIM.setMatrixAt(i, _m.compose(_p.set(x, c.y, z), _q, _s.set(1, 1, 1)))
     }
+    built.cloudsIM.instanceMatrix.needsUpdate = true
   }, FRAME_PRIO.vfx)
 
   return <primitive object={built.group} />

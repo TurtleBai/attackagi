@@ -181,9 +181,49 @@ function HpPanel() {
 // ─── Weapon panel + slot pills (bottom-right) ────────────────────────────────
 
 const WEAPON_META: Record<WeaponSlot, { name: string; hint: string; tag: string }> = {
-  1: { name: 'M9 SIDEARM', hint: 'R RELOAD', tag: 'PST' },
+  1: { name: 'M9 SIDEARM', hint: 'HOLD LMB · R RELOAD', tag: 'PST' },
   2: { name: 'CQC BAT', hint: 'HOLD LMB · CHARGE ×3', tag: 'BAT' },
   3: { name: 'MOLOTOV', hint: 'RMB AIM · LMB THROW', tag: 'MLT' },
+}
+
+/** Minimal weapon silhouettes (currentColor) for the panel header + slot pills. */
+function WeaponIcon({ slot, className }: { slot: WeaponSlot; className?: string }) {
+  if (slot === 1) {
+    // pistol: slide, grip, trigger guard
+    return (
+      <svg viewBox="0 0 24 24" className={className} aria-hidden="true">
+        <path
+          fill="currentColor"
+          d="M2 7h18v4.2h-6.9l-.9 1.9h-2.4l.6-1.9H9.2l-1.9 6.4H3.4l1.9-6.4H2V7Zm16.6 4.2h1.9l.9-1.4h-2.8v1.4Z"
+        />
+      </svg>
+    )
+  }
+  if (slot === 2) {
+    // baseball bat: tapered barrel + handle + knob
+    return (
+      <svg viewBox="0 0 24 24" className={className} aria-hidden="true">
+        <path
+          d="M18.2 5.8 9.6 14.4"
+          stroke="currentColor"
+          strokeWidth="5"
+          strokeLinecap="round"
+          fill="none"
+        />
+        <path d="M9.6 14.4 5.2 18.8" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" fill="none" />
+        <circle cx="4.6" cy="19.4" r="1.7" fill="currentColor" />
+      </svg>
+    )
+  }
+  // molotov: flame, rag, neck, bottle
+  return (
+    <svg viewBox="0 0 24 24" className={className} aria-hidden="true">
+      <path
+        fill="currentColor"
+        d="M13.6 1.2c1.9 1.3 2.4 2.9 1.3 4.4h-2.2c-.5-1.3.2-2 .6-2.8.2-.5.3-1 .3-1.6ZM10.7 6.4h3.4v2.2h-3.4V6.4Zm-1.2 3c-1.3.5-2.2 1.8-2.2 3.2v6.2A3.2 3.2 0 0 0 10.5 22h3.8a3.2 3.2 0 0 0 3.2-3.2v-6.2c0-1.4-.9-2.7-2.2-3.2H9.5Zm.4 4.4 4.9-2.4c.6.4 1 1 1 1.8l-5.9 2.9v-2.3Z"
+      />
+    </svg>
+  )
 }
 
 function WeaponPanel() {
@@ -215,75 +255,88 @@ function WeaponPanel() {
   const magEmpty = ammoInMag <= 0
 
   return (
-    <div className="absolute right-4 bottom-4 flex flex-col items-end gap-2">
-      <HudPanel className="min-w-60 px-3.5 py-3">
-        <div className="mb-1.5 flex items-baseline justify-between gap-6">
-          <span className="font-mono text-sm font-bold tracking-[0.2em] text-foreground/95">{meta.name}</span>
-          <span className={MONO_LABEL}>{meta.hint}</span>
-        </div>
-        {weapon === 1 && (
-          <div>
-            <div className="flex items-baseline gap-2">
-              <span className={MONO_LABEL}>MAG</span>
-              {reloading ? (
-                <span className="animate-pulse font-mono text-xl leading-none tracking-widest text-amber-300">
-                  RELOADING
-                </span>
-              ) : (
-                <span
-                  className={cn(
-                    'font-mono text-2xl leading-none tabular-nums',
-                    magEmpty ? 'text-red-400' : magLow ? 'text-amber-300' : 'text-foreground',
-                  )}
-                >
+    <div className="absolute right-4 bottom-4 flex flex-col items-end gap-1.5">
+      {([1, 2, 3] as const).map((slot) => (
+        <WeaponCard key={slot} slot={slot} active={weapon === slot} molotovs={molotovs} />
+      ))}
+      <div className="mt-1 flex w-44 flex-col rounded-md border border-border/70 bg-background/65 px-3 py-2 backdrop-blur-sm">
+        <div className="flex items-baseline justify-center gap-1.5 font-mono text-[28px] leading-none font-black tabular-nums">
+          {weapon === 1 &&
+            (reloading ? (
+              <span className="animate-pulse text-xl tracking-[0.25em] text-amber-300">RELOADING</span>
+            ) : (
+              <>
+                <span className={cn(magEmpty ? 'text-red-400' : magLow ? 'text-amber-300' : 'text-foreground')}>
                   {ammoInMag}
-                  <span className="text-base text-muted-foreground"> / {ammoReserve}</span>
                 </span>
-              )}
-            </div>
-            <div className={cn('mt-2 h-0.5 w-full overflow-hidden rounded-full bg-muted/40', !reloading && 'opacity-0')}>
-              <div ref={reloadRef} className="h-full bg-amber-400" style={{ width: '0%' }} />
-            </div>
-          </div>
-        )}
-        {weapon === 2 && (
-          <div className="flex items-baseline gap-2">
-            <span className={MONO_LABEL}>MODE</span>
-            <span className="font-mono text-xl leading-none tracking-widest text-foreground">MELEE</span>
-            <span className="ml-1 font-mono text-[10px] text-amber-300/90">FULL CHARGE = 3× DMG</span>
-          </div>
-        )}
-        {weapon === 3 && (
-          <div className="flex items-baseline gap-2">
-            <span className={MONO_LABEL}>STOCK</span>
-            <span className={cn('font-mono text-2xl leading-none tabular-nums', molotovs <= 0 ? 'text-red-400' : 'text-foreground')}>
-              ×{molotovs}
-            </span>
-            <span className="font-mono text-base text-muted-foreground">/ {capacity}</span>
-          </div>
-        )}
-      </HudPanel>
-      <div className="flex gap-1.5">
-        {([1, 2, 3] as const).map((slot) => (
-          <SlotPill key={slot} slot={slot} active={weapon === slot} label={WEAPON_META[slot].tag} />
-        ))}
+                <span className="text-xl text-muted-foreground/70">|</span>
+                <span className={cn('text-[22px]', ammoReserve <= 0 ? 'text-red-400/90' : 'text-foreground/80')}>
+                  {ammoReserve}
+                </span>
+                {(magLow || ammoReserve <= 0) && (
+                  <span
+                    className={cn(
+                      'animate-pulse pl-1 text-xl',
+                      magEmpty || ammoReserve <= 0 ? 'text-red-500' : 'text-amber-400',
+                    )}
+                  >
+                    !!!
+                  </span>
+                )}
+              </>
+            ))}
+          {weapon === 2 && <span className="text-xl tracking-[0.3em] text-foreground">MELEE</span>}
+          {weapon === 3 && (
+            <>
+              <span className={cn(molotovs <= 0 ? 'text-red-400' : 'text-foreground')}>×{molotovs}</span>
+              <span className="text-xl text-muted-foreground/70">|</span>
+              <span className="text-[22px] text-foreground/80">{capacity}</span>
+              {molotovs <= 0 && <span className="animate-pulse pl-1 text-xl text-red-500">!!!</span>}
+            </>
+          )}
+        </div>
+        <div className={cn('mt-1.5 h-0.5 w-full overflow-hidden rounded-full bg-muted/40', !reloading && 'opacity-0')}>
+          <div ref={reloadRef} className="h-full bg-amber-400" style={{ width: '0%' }} />
+        </div>
+        <span className="mt-1 text-center font-mono text-[9px] tracking-[0.2em] text-muted-foreground/80">{meta.hint}</span>
       </div>
     </div>
   )
 }
 
-function SlotPill({ slot, active, label }: { slot: WeaponSlot; active: boolean; label: string }) {
+/** Icon-forward weapon tile (reference-style stack): big pictogram, name below,
+ *  count badge for consumables, amber highlight on the equipped slot. */
+function WeaponCard({ slot, active, molotovs }: { slot: WeaponSlot; active: boolean; molotovs: number }) {
+  const meta = WEAPON_META[slot]
   return (
     <div
       className={cn(
-        'flex h-10 w-12 flex-col items-center justify-center rounded-[3px] border font-mono backdrop-blur-sm transition-all duration-150',
+        'relative flex h-[4.4rem] w-24 flex-col items-center justify-center gap-1 rounded-md border backdrop-blur-sm transition-all duration-150',
         active
-          ? 'border-amber-300/80 bg-amber-400/10 text-amber-200 shadow-[0_0_14px_-4px_rgba(252,211,77,0.9)]'
-          : 'border-border bg-background/50 text-muted-foreground',
+          ? 'border-amber-300/80 bg-background/75 shadow-[0_0_16px_-4px_rgba(252,211,77,0.85)]'
+          : 'border-border/70 bg-background/45 opacity-75',
       )}
     >
-      <span className="text-[9px] leading-none opacity-70">{slot}</span>
-      <span className="mt-1 text-[10px] leading-none tracking-[0.2em]">{label}</span>
+      <span className="absolute top-1 left-1.5 font-mono text-[9px] leading-none text-muted-foreground/80">{slot}</span>
+      {slot === 3 && (
+        <span
+          className={cn(
+            'absolute top-1 right-1.5 font-mono text-[10px] leading-none font-bold',
+            molotovs <= 0 ? 'text-red-400' : 'text-amber-200',
+          )}
+        >
+          ×{molotovs}
+        </span>
+      )}
+      <WeaponIcon slot={slot} className={cn('size-7', active ? 'text-amber-100' : 'text-muted-foreground')} />
+      <span
+        className={cn(
+          'px-1 text-center font-mono text-[8px] leading-none tracking-[0.14em]',
+          active ? 'text-orange-300' : 'text-orange-400/60',
+        )}
+      >
+        {meta.name}
+      </span>
     </div>
   )
 }

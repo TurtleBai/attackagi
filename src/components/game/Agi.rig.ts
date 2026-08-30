@@ -1,5 +1,6 @@
 'use client'
 import * as THREE from 'three'
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
 import { bossHullMaterial, darkMetalMaterial, emissiveMaterial, glowMetal } from '@/game/gfx/materials'
 import { seededRandom } from '@/game/gfx/textures'
 
@@ -8,6 +9,15 @@ import { seededRandom } from '@/game/gfx/textures'
 // torso with reactor core, two telescoping arms with articulated 4-finger
 // hands that can morph into miniguns / a death-beam cannon, death debris.
 // Everything animatable is returned as a rig of refs; Agi.tsx drives it.
+//
+// Draw-call budget: static sub-parts are pre-merged into one mesh per material
+// family (head greebles, torso hull, torso machinery), and articulated-but-
+// identical parts are instanced (arm segments L/R with pistons baked in,
+// collars, cable loops, shoulders, finger phalanges, cargo bots, LEDs,
+// sparks). Per-frame instanceMatrix/instanceColor attributes use
+// DynamicDrawUsage; counts are sized once and limited via .count.
+// Shadow casters are limited to: head casing, torso block, arm segments,
+// hands (cuff/palm/fingers) — never greebles or glow.
 
 export const HEAD_CENTER = new THREE.Vector3(0, 27, -64)
 export const HEAD_RADIUS = 8.2
@@ -57,6 +67,34 @@ function mesh(geo: THREE.BufferGeometry, mat: THREE.Material, shadow = true): TH
   m.castShadow = shadow
   m.receiveShadow = shadow
   return m
+}
+
+// build-time scratch for baking transforms into geometry
+const _bakeM = new THREE.Matrix4()
+const _bakeQ = new THREE.Quaternion()
+const _bakeE = new THREE.Euler()
+const _bakeP = new THREE.Vector3()
+const _bakeS = new THREE.Vector3()
+
+/**
+ * Bake a T·R(EulerXYZ)·S transform into a geometry (build-time only; mutates
+ * and returns it). Matches Object3D position/rotation/scale composition, so
+ * merged parts land exactly where their old child meshes sat.
+ */
+function placed(
+  geo: THREE.BufferGeometry, x: number, y: number, z: number,
+  rx = 0, ry = 0, rz = 0, sx = 1, sy = sx, sz = sx,
+): THREE.BufferGeometry {
+  _bakeQ.setFromEuler(_bakeE.set(rx, ry, rz))
+  _bakeM.compose(_bakeP.set(x, y, z), _bakeQ, _bakeS.set(sx, sy, sz))
+  geo.applyMatrix4(_bakeM)
+  return geo
+}
+
+/** Merge geometries into one draw (build-time; normalizes index-ness). */
+function merged(geos: THREE.BufferGeometry[]): THREE.BufferGeometry {
+  const parts = geos.map((g) => (g.index ? g.toNonIndexed() : g))
+  return mergeGeometries(parts, false) ?? parts[0]
 }
 
 /** Diagonal hazard chevron strip texture (own seeded canvas, same worn family). */
@@ -136,6 +174,7 @@ void main() {
 // ─── rig interfaces ──────────────────────────────────────────────────────────
 
 export interface FingerRig {
+  /** transform-only groups; the phalanx meshes live in AgiRig.fingerLevels instances */
   root: THREE.Group
   mid: THREE.Group
   tip: THREE.Group
@@ -147,15 +186,13 @@ export interface HandRig {
   minigun: { group: THREE.Group; spinner: THREE.Group; flashMat: THREE.MeshBasicMaterial }
   cannon: { group: THREE.Group; charge: THREE.Mesh; chargeMat: THREE.MeshBasicMaterial }
   cargo: THREE.Group
-  cargoBots: THREE.Group[]
+  /** dummy-robot bodies/eyes; show n bots by setting .count on both */
+  cargoBodies: THREE.InstancedMesh
+  cargoEyes: THREE.InstancedMesh
 }
 
 export interface ArmRig {
   group: THREE.Group
-  segs: THREE.Mesh[]
-  collars: THREE.Mesh[]
-  pistons: THREE.Mesh[]
-  shoulder: THREE.Mesh
   hand: HandRig
 }
 
@@ -165,10 +202,22 @@ export interface AgiRig {
   bob: THREE.Group
   head: THREE.Group
   arms: [ArmRig, ArmRig]
+  /** per-segment-index instanced meshes (2 instances: arm L/R); piston rod baked in */
+  segs: THREE.InstancedMesh[]
+  /** joint collars, 2×(ARM_SEGMENTS−1) instances (unit radius; xz-scaled per joint) */
+  collars: THREE.InstancedMesh
+  /** cable loop rings on every other collar, 2×3 instances */
+  loops: THREE.InstancedMesh
+  /** shoulder spheres, 2 instances */
+  shoulders: THREE.InstancedMesh
+  /** finger phalanx levels (root/mid/tip), 8 instances each (2 hands × 4 fingers) */
+  fingerLevels: [THREE.InstancedMesh, THREE.InstancedMesh, THREE.InstancedMesh]
   reactorMat: THREE.ShaderMaterial
   fan: THREE.Group
-  ledMats: { mat: THREE.MeshBasicMaterial; base: THREE.Color; phase: number }[]
-  sparks: { group: THREE.Group; bits: THREE.Mesh[] }[]
+  /** blinking LEDs, driven via instanceColor on their shared instanced meshes */
+  leds: { mesh: THREE.InstancedMesh; index: number; base: THREE.Color; phase: number }[]
+  ledMeshes: THREE.InstancedMesh[]
+  sparks: { group: THREE.Group; inst: THREE.InstancedMesh }[]
   beam: { group: THREE.Group; core: THREE.Mesh; sheath: THREE.Mesh; sheathMat: THREE.ShaderMaterial; impact: THREE.Mesh; impactMat: THREE.MeshBasicMaterial }
   debris: { group: THREE.Group; chunks: THREE.Mesh[] }
 }
@@ -185,120 +234,138 @@ export function buildAgiRig(screenMaterial: THREE.ShaderMaterial): AgiRig {
   const bob = new THREE.Group()
   model.add(bob)
 
+  // Generous fixed bounds for world-space-instanced arm parts: the arms sweep
+  // the whole arena, so a static sphere avoids stale per-instance recomputes
+  // while still letting the renderer cull the boss when the player faces away.
+  const armBounds = () => new THREE.Sphere(new THREE.Vector3(0, 15, -20), 100)
+
   // ── HEAD: giant retro monitor ─────────────────────────────────────────────
   const head = new THREE.Group()
   head.position.copy(HEAD_CENTER)
   bob.add(head)
 
-  const casing = mesh(chamferBoxGeo(16, 11, 8, 0.55), hull)
+  const casing = mesh(chamferBoxGeo(16, 11, 8, 0.55), hull) // shadow caster
   casing.position.z = -0.35
   head.add(casing)
 
-  // protruding bezel frame around the screen opening
-  const bezelH = mesh(chamferBoxGeo(13.8, 1.0, 1.1, 0.2), dark)
-  bezelH.position.set(0, 4.35, 3.9)
-  head.add(bezelH)
-  const bezelB = bezelH.clone()
-  bezelB.position.set(0, -4.35, 3.9)
-  head.add(bezelB)
-  const bezelSide = mesh(chamferBoxGeo(1.0, 7.9, 1.1, 0.2), dark)
-  bezelSide.position.set(-6.4, 0, 3.9)
-  head.add(bezelSide)
-  const bezelSide2 = bezelSide.clone()
-  bezelSide2.position.set(6.4, 0, 3.9)
-  head.add(bezelSide2)
+  // every static dark greeble of the head → ONE mesh:
+  // bezel frame ×4, antennas ×2, brand plate, handle, 20 vent fins
+  {
+    const parts: THREE.BufferGeometry[] = []
+    parts.push(placed(chamferBoxGeo(13.8, 1.0, 1.1, 0.2), 0, 4.35, 3.9))
+    parts.push(placed(chamferBoxGeo(13.8, 1.0, 1.1, 0.2), 0, -4.35, 3.9))
+    parts.push(placed(chamferBoxGeo(1.0, 7.9, 1.1, 0.2), -6.4, 0, 3.9))
+    parts.push(placed(chamferBoxGeo(1.0, 7.9, 1.1, 0.2), 6.4, 0, 3.9))
+    for (const sx of [-1, 1]) {
+      parts.push(placed(new THREE.CylinderGeometry(0.06, 0.11, 3.6, 6), sx * 5.4, 7.2, -1.5, 0, 0, -sx * 0.14))
+    }
+    parts.push(placed(chamferBoxGeo(4.2, 0.8, 0.3, 0.1), 0, -4.6, 4.05))
+    parts.push(placed(chamferBoxGeo(6, 0.7, 1.4, 0.25), 0, 5.85, -1.5))
+    for (const sx of [-1, 1]) {
+      for (let f = 0; f < 10; f++) {
+        parts.push(placed(new THREE.BoxGeometry(0.5, 0.28, 5.4), sx * 8.05, -3.4 + f * 0.76, -0.6, 0, 0, sx * 0.12))
+      }
+    }
+    const headGreebles = mesh(merged(parts), dark, false)
+    headGreebles.receiveShadow = true
+    head.add(headGreebles)
+  }
 
   // recessed CRT screen
   const screen = new THREE.Mesh(new THREE.PlaneGeometry(12.4, 7.9), screenMaterial)
   screen.position.set(0, 0, 3.72)
   head.add(screen)
 
-  // side vents: instanced fins, real silhouette change
-  const finGeo = new THREE.BoxGeometry(0.5, 0.28, 5.4)
-  const vents = new THREE.InstancedMesh(finGeo, dark, 20)
-  vents.castShadow = true
-  const dummy = new THREE.Object3D()
-  let vi = 0
-  for (const sx of [-1, 1]) {
-    for (let f = 0; f < 10; f++) {
-      dummy.position.set(sx * 8.05, -3.4 + f * 0.76, -0.6)
-      dummy.rotation.set(0, 0, sx * 0.12)
-      dummy.updateMatrix()
-      vents.setMatrixAt(vi++, dummy.matrix)
+  // ── blinking LEDs: instanced, colors animated via instanceColor ──────────
+  const ledMat = new THREE.MeshBasicMaterial({ toneMapped: false })
+  const leds: AgiRig['leds'] = []
+  const ledMeshes: THREE.InstancedMesh[] = []
+  const ledInstanced = (
+    geo: THREE.BufferGeometry, parent: THREE.Object3D,
+    entries: { x: number; y: number; z: number; color: THREE.ColorRepresentation; phase: number }[],
+  ): void => {
+    const im = new THREE.InstancedMesh(geo, ledMat, entries.length)
+    entries.forEach((e, i) => {
+      _bakeM.makeTranslation(e.x, e.y, e.z)
+      im.setMatrixAt(i, _bakeM)
+      const base = new THREE.Color(e.color).multiplyScalar(2.2)
+      im.setColorAt(i, base)
+      leds.push({ mesh: im, index: i, base, phase: e.phase })
+    })
+    im.instanceColor!.setUsage(THREE.DynamicDrawUsage)
+    parent.add(im)
+    ledMeshes.push(im)
+  }
+  // antenna tips (children of the head so they turn with it)
+  ledInstanced(new THREE.SphereGeometry(0.24, 8, 8), head, [
+    { x: -5.65, y: 9.0, z: -1.5, color: 0xff4444, phase: 0 },
+    { x: 5.65, y: 9.0, z: -1.5, color: 0x44ff88, phase: 1.4 },
+  ])
+
+  // ── BODY hull: torso block + shoulder blocks → ONE mesh (shadow caster) ──
+  const torsoHull = mesh(merged([
+    placed(chamferBoxGeo(24, 13, 12, 0.8, 0.1), 0, 14.6, -70.5),
+    placed(chamferBoxGeo(7.5, 7, 8.5, 0.7), -13.2, 18.6, -70),
+    placed(chamferBoxGeo(7.5, 7, 8.5, 0.7), 13.2, 18.6, -70),
+  ]), hull)
+  bob.add(torsoHull)
+
+  // every static dark part of the body → ONE mesh: neck, head/body cables,
+  // shoulder caps, reactor ring+back, under-hull cone, fan rim, 56 greebles
+  {
+    const parts: THREE.BufferGeometry[] = []
+    parts.push(placed(new THREE.CylinderGeometry(2.4, 3.4, 3.6, 12), 0, 21.2, -66.4))
+    for (let i = 0; i < 4; i++) {
+      const sx = i < 2 ? -1 : 1
+      const k = i % 2
+      const curve = new THREE.CatmullRomCurve3([
+        new THREE.Vector3(sx * (1.6 + k * 1.2), 22.0, -65.2),
+        new THREE.Vector3(sx * (3.0 + k * 1.6), 20.4, -67.2 - k * 0.8),
+        new THREE.Vector3(sx * (3.6 + k * 1.4), 18.6, -69.0),
+      ])
+      parts.push(new THREE.TubeGeometry(curve, 10, 0.24 + k * 0.08, 7))
     }
-  }
-  vents.instanceMatrix.needsUpdate = true
-  head.add(vents)
-
-  // antennas with LED tips
-  const ledMats: AgiRig['ledMats'] = []
-  const makeLed = (color: THREE.ColorRepresentation, phase: number) => {
-    const m = emissiveMaterial(color)
-    m.color.multiplyScalar(2.2)
-    ledMats.push({ mat: m, base: m.color.clone(), phase })
-    return m
-  }
-  const antGeo = new THREE.CylinderGeometry(0.06, 0.11, 3.6, 6)
-  const tipGeo = new THREE.SphereGeometry(0.24, 8, 8)
-  for (const sx of [-1, 1]) {
-    const ant = mesh(antGeo, dark, false)
-    ant.position.set(sx * 5.4, 7.2, -1.5)
-    ant.rotation.z = -sx * 0.14
-    head.add(ant)
-    const tip = new THREE.Mesh(tipGeo, makeLed(sx < 0 ? 0xff4444 : 0x44ff88, sx < 0 ? 0 : 1.4))
-    tip.position.set(sx * 5.65, 9.0, -1.5)
-    head.add(tip)
-  }
-
-  // brand plate + a small top handle greeble
-  const plate = mesh(chamferBoxGeo(4.2, 0.8, 0.3, 0.1), dark, false)
-  plate.position.set(0, -4.6, 4.05)
-  head.add(plate)
-  const handle = mesh(chamferBoxGeo(6, 0.7, 1.4, 0.25), dark)
-  handle.position.set(0, 5.85, -1.5)
-  head.add(handle)
-
-  // ── neck + cables into the body ───────────────────────────────────────────
-  const neck = mesh(new THREE.CylinderGeometry(2.4, 3.4, 3.6, 12), dark)
-  neck.position.set(0, 21.2, -66.4)
-  bob.add(neck)
-
-  const cableMat = dark
-  for (let i = 0; i < 4; i++) {
-    const sx = i < 2 ? -1 : 1
-    const k = i % 2
-    const curve = new THREE.CatmullRomCurve3([
-      new THREE.Vector3(sx * (1.6 + k * 1.2), 22.0, -65.2),
-      new THREE.Vector3(sx * (3.0 + k * 1.6), 20.4, -67.2 - k * 0.8),
-      new THREE.Vector3(sx * (3.6 + k * 1.4), 18.6, -69.0),
-    ])
-    const tube = mesh(new THREE.TubeGeometry(curve, 10, 0.24 + k * 0.08, 7), cableMat)
-    bob.add(tube)
+    for (const sx of [-1, 1]) {
+      parts.push(placed(new THREE.CylinderGeometry(2.9, 2.9, 1.1, 14), sx * 16.6, 19.2, -69.5, 0, 0, Math.PI / 2))
+    }
+    parts.push(placed(new THREE.TorusGeometry(2.7, 0.55, 10, 24), 0, 14.6, -64.25))
+    parts.push(placed(new THREE.CircleGeometry(2.7, 24), 0, 14.6, -64.35))
+    for (const sx of [-1, 1]) {
+      for (let k = 0; k < 2; k++) {
+        const curve = new THREE.CatmullRomCurve3([
+          new THREE.Vector3(sx * (11.0 - k * 1.6), 12.5, -66.5 - k * 2.2),
+          new THREE.Vector3(sx * (13.4 - k * 1.2), 8.6, -68.5 - k * 1.6),
+          new THREE.Vector3(sx * (9.5 - k * 1.0), 6.2, -71.0),
+        ])
+        parts.push(new THREE.TubeGeometry(curve, 12, 0.42 - k * 0.1, 8))
+      }
+    }
+    parts.push(placed(new THREE.ConeGeometry(8.2, 6.5, 14), 0, 5.4, -70.5, Math.PI))
+    // fan rim: rotationally symmetric around the fan axis, so it can live here
+    parts.push(placed(new THREE.TorusGeometry(1.7, 0.22, 8, 18), 12.15, 15.5, -73, 0, Math.PI / 2, 0))
+    // greebled machinery boxes over torso top/back/shoulders (same seeded layout)
+    const grnd = seededRandom(9182)
+    for (let i = 0; i < 56; i++) {
+      const zone = grnd()
+      let x: number, y: number, z: number
+      if (zone < 0.5) {
+        x = (grnd() - 0.5) * 20; y = 21.2 + grnd() * 0.9; z = -70.5 + (grnd() - 0.5) * 9
+      } else if (zone < 0.8) {
+        x = (grnd() - 0.5) * 21; y = 11 + grnd() * 7; z = -76.6 - grnd() * 0.8
+      } else {
+        const sx = grnd() < 0.5 ? -1 : 1
+        x = sx * (11 + grnd() * 4.5); y = 22.2 + grnd() * 0.6; z = -70 + (grnd() - 0.5) * 6
+      }
+      const ry = grnd() * Math.PI
+      parts.push(placed(new THREE.BoxGeometry(1, 1, 1), x, y, z, 0, ry, 0,
+        0.7 + grnd() * 2.4, 0.5 + grnd() * 1.7, 0.7 + grnd() * 2.2))
+    }
+    const bodyGreebles = mesh(merged(parts), dark, false)
+    bodyGreebles.receiveShadow = true
+    bob.add(bodyGreebles)
   }
 
-  // ── BODY: torso block, shoulders, reactor, chevrons, greebles ────────────
-  const torso = mesh(chamferBoxGeo(24, 13, 12, 0.8, 0.1), hull)
-  torso.position.set(0, 14.6, -70.5)
-  bob.add(torso)
-
-  for (const sx of [-1, 1]) {
-    const shoulderBlock = mesh(chamferBoxGeo(7.5, 7, 8.5, 0.7), hull)
-    shoulderBlock.position.set(sx * 13.2, 18.6, -70)
-    bob.add(shoulderBlock)
-    // shoulder cap ring
-    const cap = mesh(new THREE.CylinderGeometry(2.9, 2.9, 1.1, 14), dark)
-    cap.rotation.z = Math.PI / 2
-    cap.position.set(sx * 16.6, 19.2, -69.5)
-    bob.add(cap)
-  }
-
-  // reactor: dark housing ring + additive shader core
-  const reactorRing = mesh(new THREE.TorusGeometry(2.7, 0.55, 10, 24), dark)
-  reactorRing.position.set(0, 14.6, -64.25)
-  bob.add(reactorRing)
-  const reactorBack = mesh(new THREE.CircleGeometry(2.7, 24), dark, false)
-  reactorBack.position.set(0, 14.6, -64.35)
-  bob.add(reactorBack)
+  // reactor core: additive shader disc (housing merged into the body mesh above)
   const reactorMat = new THREE.ShaderMaterial({
     uniforms: { uTime: { value: 0 }, uHeat: { value: 1 } },
     vertexShader: PLAIN_VERT,
@@ -321,23 +388,7 @@ export function buildAgiRig(screenMaterial: THREE.ShaderMaterial): AgiRig {
   chev.position.set(0, 9.4, -64.35)
   bob.add(chev)
 
-  // thick body cables looping from the torso sides down under it
-  for (const sx of [-1, 1]) {
-    for (let k = 0; k < 2; k++) {
-      const curve = new THREE.CatmullRomCurve3([
-        new THREE.Vector3(sx * (11.0 - k * 1.6), 12.5, -66.5 - k * 2.2),
-        new THREE.Vector3(sx * (13.4 - k * 1.2), 8.6, -68.5 - k * 1.6),
-        new THREE.Vector3(sx * (9.5 - k * 1.0), 6.2, -71.0),
-      ])
-      bob.add(mesh(new THREE.TubeGeometry(curve, 12, 0.42 - k * 0.1, 8), dark))
-    }
-  }
-
-  // under-hull cone + engine glow
-  const under = mesh(new THREE.ConeGeometry(8.2, 6.5, 14), dark)
-  under.rotation.x = Math.PI
-  under.position.set(0, 5.4, -70.5)
-  bob.add(under)
+  // engine glow under the hull cone
   const engineGlowMat = emissiveMaterial(0x3a6bff, 0.85)
   engineGlowMat.color.multiplyScalar(1.6)
   const engineGlow = new THREE.Mesh(new THREE.CircleGeometry(3.2, 18), engineGlowMat)
@@ -345,117 +396,165 @@ export function buildAgiRig(screenMaterial: THREE.ShaderMaterial): AgiRig {
   engineGlow.position.set(0, 3.1, -70.5)
   bob.add(engineGlow)
 
-  // greebled machinery: instanced boxes over torso top/back/shoulders
-  const greebleGeo = new THREE.BoxGeometry(1, 1, 1)
-  const greebles = new THREE.InstancedMesh(greebleGeo, dark, 56)
-  greebles.castShadow = true
-  const grnd = seededRandom(9182)
-  for (let i = 0; i < 56; i++) {
-    const zone = grnd()
-    if (zone < 0.5) {
-      // torso top
-      dummy.position.set((grnd() - 0.5) * 20, 21.2 + grnd() * 0.9, -70.5 + (grnd() - 0.5) * 9)
-    } else if (zone < 0.8) {
-      // torso back
-      dummy.position.set((grnd() - 0.5) * 21, 11 + grnd() * 7, -76.6 - grnd() * 0.8)
-    } else {
-      // shoulder tops
-      const sx = grnd() < 0.5 ? -1 : 1
-      dummy.position.set(sx * (11 + grnd() * 4.5), 22.2 + grnd() * 0.6, -70 + (grnd() - 0.5) * 6)
-    }
-    dummy.rotation.set(0, grnd() * Math.PI, 0)
-    dummy.scale.set(0.7 + grnd() * 2.4, 0.5 + grnd() * 1.7, 0.7 + grnd() * 2.2)
-    dummy.updateMatrix()
-    greebles.setMatrixAt(i, dummy.matrix)
-  }
-  greebles.instanceMatrix.needsUpdate = true
-  bob.add(greebles)
-
-  // cooling fan on the torso's right flank
+  // cooling fan blades (spin as a unit → one merged mesh in the rotating group)
   const fan = new THREE.Group()
   fan.position.set(12.15, 15.5, -73)
-  const fanRim = mesh(new THREE.TorusGeometry(1.7, 0.22, 8, 18), dark, false)
-  fanRim.rotation.y = Math.PI / 2
-  fan.add(fanRim)
-  const bladeGeo = new THREE.BoxGeometry(0.08, 0.55, 1.5)
-  for (let b = 0; b < 5; b++) {
-    const blade = mesh(bladeGeo, dark, false)
-    blade.rotation.x = (b / 5) * Math.PI * 2
-    blade.position.set(0, Math.sin((b / 5) * Math.PI * 2) * 0.8, Math.cos((b / 5) * Math.PI * 2) * 0.8)
-    blade.rotation.z = 0.5
-    fan.add(blade)
+  {
+    const parts: THREE.BufferGeometry[] = []
+    for (let b = 0; b < 5; b++) {
+      const a = (b / 5) * Math.PI * 2
+      parts.push(placed(new THREE.BoxGeometry(0.08, 0.55, 1.5), 0, Math.sin(a) * 0.8, Math.cos(a) * 0.8, a, 0, 0.5))
+    }
+    fan.add(mesh(merged(parts), dark, false))
   }
   bob.add(fan)
 
-  // status LEDs across the torso front
-  const ledGeo = new THREE.BoxGeometry(0.35, 0.35, 0.2)
+  // status LEDs across the torso front (instanced, same blink contract)
   const ledColors: THREE.ColorRepresentation[] = [0xff5533, 0x44ff88, 0x33aaff, 0xffcc44, 0x44ff88]
-  for (let i = 0; i < 5; i++) {
-    const led = new THREE.Mesh(ledGeo, makeLed(ledColors[i], i * 0.9))
-    led.position.set(-9 + i * 1.1, 20.2, -64.4)
-    bob.add(led)
+  ledInstanced(new THREE.BoxGeometry(0.35, 0.35, 0.2), bob,
+    ledColors.map((color, i) => ({ x: -9 + i * 1.1, y: 20.2, z: -64.4, color, phase: i * 0.9 })))
+
+  // ── ARMS: instanced articulation ──────────────────────────────────────────
+  // Segment i (unit height, scaled y=len per frame) with its piston rod baked
+  // in at a fixed local azimuth (rod height 0.8 → world 0.8·len, as before).
+  const segs: THREE.InstancedMesh[] = []
+  for (let i = 0; i < ARM_SEGMENTS; i++) {
+    const segCyl = new THREE.CylinderGeometry(Math.max(0.4, SEG_RADIUS[i] - 0.05), SEG_RADIUS[i], 1, 12, 1)
+    const rod = new THREE.CylinderGeometry(0.13, 0.13, 0.8, 6)
+    rod.translate(SEG_RADIUS[i] * 0.85, 0, 0)
+    const im = new THREE.InstancedMesh(merged([segCyl, rod]), dark, 2)
+    im.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
+    im.castShadow = true // arm segments cast
+    im.receiveShadow = true
+    im.boundingSphere = armBounds()
+    model.add(im)
+    segs.push(im)
   }
 
-  // ── ARMS ──────────────────────────────────────────────────────────────────
-  const segGeos: THREE.CylinderGeometry[] = []
-  const collarGeos: THREE.CylinderGeometry[] = []
-  for (let i = 0; i < ARM_SEGMENTS; i++) {
-    segGeos.push(new THREE.CylinderGeometry(Math.max(0.4, SEG_RADIUS[i] - 0.05), SEG_RADIUS[i], 1, 12, 1))
-    if (i > 0) collarGeos.push(new THREE.CylinderGeometry(SEG_RADIUS[i] + 0.24, SEG_RADIUS[i] + 0.24, 0.62, 12))
+  const mkArmInstanced = (geo: THREE.BufferGeometry, count: number): THREE.InstancedMesh => {
+    const im = new THREE.InstancedMesh(geo, dark, count)
+    im.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
+    im.receiveShadow = true
+    im.boundingSphere = armBounds()
+    model.add(im)
+    return im
   }
-  const pistonGeo = new THREE.CylinderGeometry(0.13, 0.13, 1, 6)
-  const shoulderGeo = new THREE.SphereGeometry(2.15, 16, 12)
+  // joint collars: unit radius, height baked; xz-scaled to SEG_RADIUS[i]+0.24
+  const collars = mkArmInstanced(new THREE.CylinderGeometry(1, 1, 0.62, 12), 2 * (ARM_SEGMENTS - 1))
+  // cable loop rings hugging every other collar (uniform scale SEG_RADIUS[i]+0.3)
   const loopGeo = new THREE.TorusGeometry(1, 0.07, 6, 14)
+  loopGeo.rotateX(Math.PI / 2)
+  const loops = mkArmInstanced(loopGeo, 2 * 3)
+  const shoulders = mkArmInstanced(new THREE.SphereGeometry(2.15, 16, 12), 2)
+
+  // finger phalanx levels: identical geometry across 2 hands × 4 fingers →
+  // 3 instanced meshes (root/mid/tip), matrices synced from the finger groups
+  const mkFingerLevel = (ph: THREE.BufferGeometry, py: number, knuckleScale: number): THREE.InstancedMesh => {
+    const knuckle = new THREE.SphereGeometry(0.32, 8, 8)
+    const geo = merged([placed(ph, 0, py, 0), placed(knuckle, 0, 0, 0, 0, 0, 0, knuckleScale)])
+    const im = new THREE.InstancedMesh(geo, dark, 8)
+    im.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
+    im.castShadow = true // part of the hands
+    im.receiveShadow = true
+    im.boundingSphere = armBounds()
+    model.add(im)
+    return im
+  }
+  const fingerLevels: AgiRig['fingerLevels'] = [
+    mkFingerLevel(chamferBoxGeo(0.52, 1.1, 0.56, 0.1, 0.8), 0.55, 1),
+    mkFingerLevel(chamferBoxGeo(0.46, 0.95, 0.5, 0.09, 0.8), 0.48, 0.85),
+    mkFingerLevel(chamferBoxGeo(0.4, 0.85, 0.44, 0.09, 0.8), 0.42, 0.7),
+  ]
+
+  // ── hand shared geometry/materials (built once, used by both hands) ──────
+  const cuffGeo = new THREE.CylinderGeometry(0.8, 1.0, 0.95, 10)
+  const palmGeo = merged([
+    placed(chamferBoxGeo(3.0, 2.4, 1.2, 0.3, 0.3), 0, 1.55, 0.05),
+    placed(chamferBoxGeo(2.3, 1.6, 0.45, 0.16, 0.4), 0, 1.55, 0.75),
+  ])
+  const palmDotGeo = new THREE.CircleGeometry(0.34, 12)
+  const palmDotMat = glowMetal(0x66ddff, 1.6)
+
+  // minigun morph: mount + one merged spinner mesh + one merged flash mesh
+  const mountGeo = chamferBoxGeo(1.7, 1.3, 1.7, 0.2, 0.5)
+  const spinnerGeo = (() => {
+    const parts: THREE.BufferGeometry[] = []
+    parts.push(placed(new THREE.CylinderGeometry(0.32, 0.32, 3.4, 8), 0, 1.6, 0))
+    for (let b = 0; b < 6; b++) {
+      const a = (b / 6) * Math.PI * 2
+      parts.push(placed(new THREE.CylinderGeometry(0.15, 0.17, 3.3, 7), Math.cos(a) * 0.56, 1.62, Math.sin(a) * 0.56))
+    }
+    parts.push(placed(new THREE.TorusGeometry(0.62, 0.11, 6, 14), 0, 3.15, 0, Math.PI / 2))
+    return merged(parts)
+  })()
+  const flashGeo = merged([
+    placed(new THREE.PlaneGeometry(1.9, 1.9), 0, 3.35, 0, Math.PI / 2),
+    placed(new THREE.PlaneGeometry(1.9, 1.9), 0, 3.35, 0, Math.PI / 2, 0, Math.PI / 4),
+  ])
+
+  // death-beam cannon morph: one merged static mesh + charge sphere
+  const cannonStaticGeo = (() => {
+    const parts: THREE.BufferGeometry[] = []
+    parts.push(placed(chamferBoxGeo(2.1, 1.7, 1.9, 0.25, 0.4), 0, 0.5, 0))
+    parts.push(placed(new THREE.CylinderGeometry(0.58, 0.82, 4.8, 12), 0, 3.3, 0))
+    parts.push(placed(new THREE.TorusGeometry(0.72, 0.14, 8, 16), 0, 5.65, 0, Math.PI / 2))
+    for (let b = 0; b < 3; b++) {
+      const a = (b / 3) * Math.PI * 2
+      parts.push(placed(new THREE.BoxGeometry(0.16, 3.6, 0.7), Math.cos(a) * 0.85, 3.1, Math.sin(a) * 0.85, 0, -a, 0))
+    }
+    return merged(parts)
+  })()
+  const chargeGeo = new THREE.SphereGeometry(1, 14, 12)
+
+  // cargo dummy robots: body+head merged (dark) + eye strip (emissive) →
+  // 2 instanced draws per hand; static seeded matrices, .count shows n bots
+  const botGeo = merged([
+    chamferBoxGeo(0.56, 0.78, 0.4, 0.08, 1),
+    placed(new THREE.BoxGeometry(0.34, 0.3, 0.32), 0, 0.56, 0),
+  ])
+  const eyeGeo = new THREE.BoxGeometry(0.26, 0.06, 0.05)
+  const eyeMat = emissiveMaterial(0xff3344)
+  eyeMat.color.multiplyScalar(2)
+  const botMatrices: THREE.Matrix4[] = []
+  const eyeMatrices: THREE.Matrix4[] = []
+  {
+    const brnd = seededRandom(311)
+    const eyeLocal = new THREE.Matrix4().makeTranslation(0, 0.56, -0.18)
+    for (let b = 0; b < 5; b++) {
+      const px = (b - 2) * 0.62 + (brnd() - 0.5) * 0.2
+      const py = -0.5 - brnd() * 0.5
+      const pz = (brnd() - 0.5) * 0.4
+      _bakeQ.setFromEuler(_bakeE.set((brnd() - 0.5) * 0.5, brnd() * Math.PI, (brnd() - 0.5) * 0.6))
+      const m = new THREE.Matrix4().compose(_bakeP.set(px, py, pz), _bakeQ, _bakeS.set(1, 1, 1))
+      botMatrices.push(m)
+      eyeMatrices.push(new THREE.Matrix4().multiplyMatrices(m, eyeLocal))
+    }
+  }
 
   function buildHand(): HandRig {
     const group = new THREE.Group()
     // wrist cuff
-    const cuff = mesh(new THREE.CylinderGeometry(0.8, 1.0, 0.95, 10), dark)
+    const cuff = mesh(cuffGeo, dark) // hands cast
     cuff.position.y = 0.25
     group.add(cuff)
-    // palm (local frame: +Y fingers, -Z palm side)
-    const palm = mesh(chamferBoxGeo(3.0, 2.4, 1.2, 0.3, 0.3), hull)
-    palm.position.set(0, 1.55, 0.05)
+    // palm + back plate (local frame: +Y fingers, -Z palm side) — one hull mesh
+    const palm = mesh(palmGeo, hull) // hands cast
     group.add(palm)
-    const backPlate = mesh(chamferBoxGeo(2.3, 1.6, 0.45, 0.16, 0.4), hull)
-    backPlate.position.set(0, 1.55, 0.75)
-    group.add(backPlate)
     // repulsor dot in the palm
-    const palmDot = new THREE.Mesh(new THREE.CircleGeometry(0.34, 12), glowMetal(0x66ddff, 1.6))
+    const palmDot = new THREE.Mesh(palmDotGeo, palmDotMat)
     palmDot.rotation.x = Math.PI
     palmDot.position.set(0, 1.55, -0.62)
     group.add(palmDot)
 
-    // fingers ×4
+    // fingers ×4: transform-only groups (meshes are the shared instanced levels)
     const fingers: FingerRig[] = []
-    const xs = [-1.14, -0.38, 0.38, 1.14]
-    const p1Geo = chamferBoxGeo(0.52, 1.1, 0.56, 0.1, 0.8)
-    const p2Geo = chamferBoxGeo(0.46, 0.95, 0.5, 0.09, 0.8)
-    const p3Geo = chamferBoxGeo(0.4, 0.85, 0.44, 0.09, 0.8)
-    const knuckleGeo = new THREE.SphereGeometry(0.32, 8, 8)
-    for (const fx of xs) {
+    for (const fx of [-1.14, -0.38, 0.38, 1.14]) {
       const fRoot = new THREE.Group()
       fRoot.position.set(fx, 2.65, -0.05)
-      const ph1 = mesh(p1Geo, dark)
-      ph1.position.y = 0.55
-      fRoot.add(ph1)
-      fRoot.add(mesh(knuckleGeo, dark))
       const fMid = new THREE.Group()
       fMid.position.y = 1.08
-      const ph2 = mesh(p2Geo, dark)
-      ph2.position.y = 0.48
-      fMid.add(ph2)
-      const k2 = mesh(knuckleGeo, dark)
-      k2.scale.setScalar(0.85)
-      fMid.add(k2)
       const fTip = new THREE.Group()
       fTip.position.y = 0.94
-      const ph3 = mesh(p3Geo, dark)
-      ph3.position.y = 0.42
-      fTip.add(ph3)
-      const k3 = mesh(knuckleGeo, dark)
-      k3.scale.setScalar(0.7)
-      fTip.add(k3)
       fMid.add(fTip)
       fRoot.add(fMid)
       group.add(fRoot)
@@ -466,68 +565,31 @@ export function buildAgiRig(screenMaterial: THREE.ShaderMaterial): AgiRig {
     const minigunGroup = new THREE.Group()
     minigunGroup.position.set(0, 1.35, -0.1)
     minigunGroup.visible = false
-    const mount = mesh(chamferBoxGeo(1.7, 1.3, 1.7, 0.2, 0.5), dark)
+    const mount = mesh(mountGeo, dark, false)
     mount.position.y = 0.4
     minigunGroup.add(mount)
     const spinner = new THREE.Group()
     spinner.position.y = 1.1
-    const shaft = mesh(new THREE.CylinderGeometry(0.32, 0.32, 3.4, 8), dark)
-    shaft.position.y = 1.6
-    spinner.add(shaft)
-    const barrelGeo = new THREE.CylinderGeometry(0.15, 0.17, 3.3, 7)
-    for (let b = 0; b < 6; b++) {
-      const a = (b / 6) * Math.PI * 2
-      const barrel = mesh(barrelGeo, dark)
-      barrel.position.set(Math.cos(a) * 0.56, 1.62, Math.sin(a) * 0.56)
-      spinner.add(barrel)
-    }
-    const muzzleRing = mesh(new THREE.TorusGeometry(0.62, 0.11, 6, 14), dark, false)
-    muzzleRing.rotation.x = Math.PI / 2
-    muzzleRing.position.y = 3.15
-    spinner.add(muzzleRing)
+    spinner.add(mesh(spinnerGeo, dark, false))
     minigunGroup.add(spinner)
     const flashMat = emissiveMaterial(0xffcc66, 0)
     flashMat.color.multiplyScalar(3)
     flashMat.blending = THREE.AdditiveBlending
     flashMat.depthWrite = false
-    const flashGeo = new THREE.PlaneGeometry(1.9, 1.9)
-    const flashA = new THREE.Mesh(flashGeo, flashMat)
-    flashA.position.y = 3.35
-    flashA.rotation.x = Math.PI / 2
-    minigunGroup.add(flashA)
-    const flashB = new THREE.Mesh(flashGeo, flashMat)
-    flashB.position.y = 3.35
-    flashB.rotation.set(Math.PI / 2, 0, Math.PI / 4)
-    minigunGroup.add(flashB)
+    const flash = new THREE.Mesh(flashGeo, flashMat)
+    minigunGroup.add(flash)
     group.add(minigunGroup)
 
     // ── death-beam cannon morph assembly ────────────────────────────────────
     const cannonGroup = new THREE.Group()
     cannonGroup.position.set(0, 1.25, 0)
     cannonGroup.visible = false
-    const breach = mesh(chamferBoxGeo(2.1, 1.7, 1.9, 0.25, 0.4), dark)
-    breach.position.y = 0.5
-    cannonGroup.add(breach)
-    const barrel = mesh(new THREE.CylinderGeometry(0.58, 0.82, 4.8, 12), dark)
-    barrel.position.y = 3.3
-    cannonGroup.add(barrel)
-    const cMuzzle = mesh(new THREE.TorusGeometry(0.72, 0.14, 8, 16), dark, false)
-    cMuzzle.rotation.x = Math.PI / 2
-    cMuzzle.position.y = 5.65
-    cannonGroup.add(cMuzzle)
-    const finGeo2 = new THREE.BoxGeometry(0.16, 3.6, 0.7)
-    for (let b = 0; b < 3; b++) {
-      const a = (b / 3) * Math.PI * 2
-      const fin = mesh(finGeo2, dark)
-      fin.position.set(Math.cos(a) * 0.85, 3.1, Math.sin(a) * 0.85)
-      fin.rotation.y = -a
-      cannonGroup.add(fin)
-    }
+    cannonGroup.add(mesh(cannonStaticGeo, dark, false))
     const chargeMat = emissiveMaterial(0xff5533, 0)
     chargeMat.color.multiplyScalar(3.4)
     chargeMat.blending = THREE.AdditiveBlending
     chargeMat.depthWrite = false
-    const charge = new THREE.Mesh(new THREE.SphereGeometry(1, 14, 12), chargeMat)
+    const charge = new THREE.Mesh(chargeGeo, chargeMat)
     charge.position.y = 5.75
     charge.scale.setScalar(0.01)
     cannonGroup.add(charge)
@@ -537,28 +599,15 @@ export function buildAgiRig(screenMaterial: THREE.ShaderMaterial): AgiRig {
     const cargo = new THREE.Group()
     cargo.position.set(0, 1.9, -1.0)
     cargo.visible = false
-    const cargoBots: THREE.Group[] = []
-    const botBody = chamferBoxGeo(0.56, 0.78, 0.4, 0.08, 1)
-    const botHead = new THREE.BoxGeometry(0.34, 0.3, 0.32)
-    const eyeMat = emissiveMaterial(0xff3344)
-    eyeMat.color.multiplyScalar(2)
-    const eyeGeo = new THREE.BoxGeometry(0.26, 0.06, 0.05)
-    const brnd = seededRandom(311)
+    const cargoBodies = new THREE.InstancedMesh(botGeo, dark, 5)
+    const cargoEyes = new THREE.InstancedMesh(eyeGeo, eyeMat, 5)
     for (let b = 0; b < 5; b++) {
-      const bot = new THREE.Group()
-      const body = mesh(botBody, dark)
-      bot.add(body)
-      const h = mesh(botHead, dark)
-      h.position.y = 0.56
-      bot.add(h)
-      const eye = new THREE.Mesh(eyeGeo, eyeMat)
-      eye.position.set(0, 0.56, -0.18)
-      bot.add(eye)
-      bot.position.set((b - 2) * 0.62 + (brnd() - 0.5) * 0.2, -0.5 - brnd() * 0.5, (brnd() - 0.5) * 0.4)
-      bot.rotation.set((brnd() - 0.5) * 0.5, brnd() * Math.PI, (brnd() - 0.5) * 0.6)
-      cargo.add(bot)
-      cargoBots.push(bot)
+      cargoBodies.setMatrixAt(b, botMatrices[b])
+      cargoEyes.setMatrixAt(b, eyeMatrices[b])
     }
+    cargoBodies.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, -0.6, 0), 3.2)
+    cargoEyes.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, -0.6, 0), 3.2)
+    cargo.add(cargoBodies, cargoEyes)
     group.add(cargo)
 
     return {
@@ -567,47 +616,23 @@ export function buildAgiRig(screenMaterial: THREE.ShaderMaterial): AgiRig {
       minigun: { group: minigunGroup, spinner, flashMat },
       cannon: { group: cannonGroup, charge, chargeMat },
       cargo,
-      cargoBots,
+      cargoBodies,
+      cargoEyes,
     }
   }
 
   function buildArm(): ArmRig {
     const group = new THREE.Group()
-    const segs: THREE.Mesh[] = []
-    const collars: THREE.Mesh[] = []
-    const pistons: THREE.Mesh[] = []
-    for (let i = 0; i < ARM_SEGMENTS; i++) {
-      const seg = mesh(segGeos[i], dark)
-      group.add(seg)
-      segs.push(seg)
-      const rod = mesh(pistonGeo, dark, false)
-      group.add(rod)
-      pistons.push(rod)
-      if (i > 0) {
-        const collar = mesh(collarGeos[i - 1], dark)
-        // cable loop ring hugs every other collar
-        if (i % 2 === 1) {
-          const loop = mesh(loopGeo, dark, false)
-          loop.rotation.x = Math.PI / 2
-          loop.scale.setScalar(SEG_RADIUS[i] + 0.3)
-          collar.add(loop)
-        }
-        group.add(collar)
-        collars.push(collar)
-      }
-    }
-    const shoulder = mesh(shoulderGeo, dark)
-    group.add(shoulder)
     const hand = buildHand()
     group.add(hand.group)
-    return { group, segs, collars, pistons, shoulder, hand }
+    return { group, hand }
   }
 
   const armL = buildArm()
   const armR = buildArm()
   model.add(armL.group, armR.group)
 
-  // ── spark clusters (punch linger / tired hands) ───────────────────────────
+  // ── spark clusters (punch linger / tired hands): one instanced draw each ──
   const sparkGeo = new THREE.TetrahedronGeometry(0.17)
   const sparkMat = emissiveMaterial(0xffd166)
   sparkMat.color.multiplyScalar(2.6)
@@ -615,14 +640,12 @@ export function buildAgiRig(screenMaterial: THREE.ShaderMaterial): AgiRig {
   for (let sI = 0; sI < 2; sI++) {
     const group = new THREE.Group()
     group.visible = false
-    const bits: THREE.Mesh[] = []
-    for (let b = 0; b < 7; b++) {
-      const bit = new THREE.Mesh(sparkGeo, sparkMat)
-      group.add(bit)
-      bits.push(bit)
-    }
+    const inst = new THREE.InstancedMesh(sparkGeo, sparkMat, 7)
+    inst.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
+    inst.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 0.9, 0), 6)
+    group.add(inst)
     model.add(group)
-    sparks.push({ group, bits })
+    sparks.push({ group, inst })
   }
 
   // ── death-beam visual ─────────────────────────────────────────────────────
@@ -655,13 +678,13 @@ export function buildAgiRig(screenMaterial: THREE.ShaderMaterial): AgiRig {
   model.add(beamImpact)
   beamImpact.visible = false
 
-  // ── death debris chunks ───────────────────────────────────────────────────
+  // ── death debris chunks (pooled; visible for ~3s on death only) ───────────
   const debrisGroup = new THREE.Group()
   debrisGroup.visible = false
   const chunks: THREE.Mesh[] = []
   const drnd = seededRandom(777)
   for (let i = 0; i < 8; i++) {
-    const chunk = mesh(chamferBoxGeo(1.4 + drnd() * 2.6, 1.0 + drnd() * 2.0, 0.8 + drnd() * 1.8, 0.25), hull)
+    const chunk = mesh(chamferBoxGeo(1.4 + drnd() * 2.6, 1.0 + drnd() * 2.0, 0.8 + drnd() * 1.8, 0.25), hull, false)
     debrisGroup.add(chunk)
     chunks.push(chunk)
   }
@@ -673,9 +696,15 @@ export function buildAgiRig(screenMaterial: THREE.ShaderMaterial): AgiRig {
     bob,
     head,
     arms: [armL, armR],
+    segs,
+    collars,
+    loops,
+    shoulders,
+    fingerLevels,
     reactorMat,
     fan,
-    ledMats,
+    leds,
+    ledMeshes,
     sparks,
     beam: { group: beamGroup, core: beamCore, sheath: beamSheath, sheathMat, impact: beamImpact, impactMat },
     debris: { group: debrisGroup, chunks },

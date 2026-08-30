@@ -141,8 +141,10 @@ export class SparkPool {
       i++
     }
     this.mesh.count = this.n
-    this.mesh.instanceMatrix.needsUpdate = true
-    this.lifeAttr.needsUpdate = true
+    if (this.n > 0) { // idle pool: no draw, no re-upload
+      this.mesh.instanceMatrix.needsUpdate = true
+      this.lifeAttr.needsUpdate = true
+    }
   }
 
   clear(): void { this.n = 0; this.cursor = 0; this.mesh.count = 0 }
@@ -248,7 +250,7 @@ export class ChunkPool {
       i++
     }
     this.mesh.count = this.n
-    this.mesh.instanceMatrix.needsUpdate = true
+    if (this.n > 0) this.mesh.instanceMatrix.needsUpdate = true // idle: skip upload
   }
 
   clear(): void { this.n = 0; this.cursor = 0; this.mesh.count = 0 }
@@ -339,8 +341,10 @@ export class PuffPool {
       i++
     }
     this.mesh.count = this.n
-    this.mesh.instanceMatrix.needsUpdate = true
-    this.lifeAttr.needsUpdate = true
+    if (this.n > 0) { // idle pool: no draw, no re-upload
+      this.mesh.instanceMatrix.needsUpdate = true
+      this.lifeAttr.needsUpdate = true
+    }
   }
 
   clear(): void { this.n = 0; this.cursor = 0; this.mesh.count = 0 }

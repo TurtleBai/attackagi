@@ -1,12 +1,22 @@
 'use client'
 import * as THREE from 'three'
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
-import { chassisMaterial, darkMetalMaterial, emissiveMaterial, glowMetal } from '@/game/gfx/materials'
+import { chassisMaterial, darkMetalMaterial, glowMetal } from '@/game/gfx/materials'
 import type { EnemyKind } from '@/game/types'
 
-// Procedural articulated robot bodies for the 4 enemy kinds. One template Group is
-// built per kind (all compound parts pre-merged into few geometries), then cloned per
-// enemy with per-instance material clones so hit-flash / glow animation is independent.
+// chest-plate emblem placement per kind (torso-local; z sits just proud of the plate)
+export const DECAL_PLACEMENT: Record<EnemyKind, { y: number; z: number; s: number }> = {
+  melee: { y: 0.16, z: 0.245, s: 0.2 },
+  ranger: { y: 0.16, z: 0.2, s: 0.17 },
+  tank: { y: 0.02, z: 0.38, s: 0.27 },
+  sniper: { y: 0.2, z: 0.175, s: 0.14 },
+}
+
+// Procedural articulated robot bodies for the 4 enemy kinds. ONE template rig is
+// built per kind (all compound parts pre-merged into few geometries) and never added
+// to the scene: Enemies.tsx poses the shared rig per enemy per frame, and
+// Enemies.instanced.ts copies each posed part's world matrix into that part's
+// InstancedMesh slot — so the whole crowd renders in a fixed handful of draw calls.
 
 // ─── Geometry toolkit (cached, shared across every instance) ─────────────────
 
@@ -112,7 +122,7 @@ function armGeo(key: string, L: number, t: number): THREE.BufferGeometry {
 
 // ─── Materials ───────────────────────────────────────────────────────────────
 
-const KIND_TINT: Record<EnemyKind, number> = {
+export const KIND_TINT: Record<EnemyKind, number> = {
   melee: 0xd8b9a8, // rust-warm plating
   ranger: 0xaec6dd, // cold blue-grey
   tank: 0xbfc4a6, // olive drab
@@ -414,58 +424,42 @@ function buildTemplate(kind: EnemyKind): THREE.Group {
   return g
 }
 
-function getTemplate(kind: EnemyKind): THREE.Group {
-  let t = templates.get(kind)
-  if (!t) {
-    t = buildTemplate(kind)
-    templates.set(kind, t)
-  }
-  return t
-}
-
-// ─── Per-enemy instance ──────────────────────────────────────────────────────
+// ─── Shared kind rigs (template + posing handles + part enumeration) ─────────
 
 export interface NodeBase {
   px: number; py: number; pz: number
   rx: number; ry: number; rz: number
 }
 
-export interface EnemyBody {
+export interface TemplatePart {
+  /** template mesh — posed world matrices are read from here every frame */
+  mesh: THREE.Mesh
+  /** material bucket: 'chassis' | 'dark' | 'glow:<key>' */
+  bucket: string
+}
+
+export interface KindRig {
+  kind: EnemyKind
+  /** template root — NOT in the scene; posed in place per enemy per frame */
   group: THREE.Group
   nodes: Record<string, THREE.Object3D>
   base: Record<string, NodeBase>
-  chassis: THREE.MeshStandardMaterial
-  dark: THREE.MeshStandardMaterial
-  glow: Record<string, THREE.MeshStandardMaterial>
-  glowBase: Record<string, number>
-  /** world-space aim line for snipers (added to the module root, not the body) */
-  laser: THREE.Mesh | null
-  dispose(): void
+  parts: TemplatePart[]
+  glowKeys: string[]
 }
 
 const NODE_NAMES = ['root', 'torso', 'head', 'armL', 'armR', 'legL', 'legR', 'weapon', 'shield', 'muzzle']
 
-export function createEnemyBody(kind: EnemyKind): EnemyBody {
-  const group = getTemplate(kind).clone(true)
-  const chassis = chassisMaterial(KIND_TINT[kind]).clone()
-  const dark = darkMetalMaterial().clone()
-  const glow: Record<string, THREE.MeshStandardMaterial> = {}
-  const glowBase: Record<string, number> = {}
-  group.traverse((o) => {
-    const mesh = o as THREE.Mesh
-    if (!mesh.isMesh) return
-    const key = mesh.userData.matKey as string | undefined
-    if (key === 'chassis') mesh.material = chassis
-    else if (key === 'dark') mesh.material = dark
-    else if (key && key.startsWith('glow:')) {
-      const gk = key.slice(5)
-      if (!glow[gk]) {
-        glow[gk] = (mesh.material as THREE.MeshStandardMaterial).clone()
-        glowBase[gk] = glow[gk].emissiveIntensity
-      }
-      mesh.material = glow[gk]
-    }
-  })
+const rigs = new Map<EnemyKind, KindRig>()
+
+export function getKindRig(kind: EnemyKind): KindRig {
+  let rig = rigs.get(kind)
+  if (rig) return rig
+  let group = templates.get(kind)
+  if (!group) {
+    group = buildTemplate(kind)
+    templates.set(kind, group)
+  }
   const nodes: Record<string, THREE.Object3D> = {}
   const base: Record<string, NodeBase> = {}
   for (const name of NODE_NAMES) {
@@ -477,21 +471,70 @@ export function createEnemyBody(kind: EnemyKind): EnemyBody {
       rx: n.rotation.x, ry: n.rotation.y, rz: n.rotation.z,
     }
   }
-  let laser: THREE.Mesh | null = null
-  if (kind === 'sniper') {
-    laser = new THREE.Mesh(boxG(1, 1, 1), emissiveMaterial(0xff2038, 0.3))
-    laser.visible = false
-    laser.frustumCulled = false
-    laser.castShadow = false
-    laser.receiveShadow = false
-  }
-  return {
-    group, nodes, base, chassis, dark, glow, glowBase, laser,
-    dispose() {
-      chassis.dispose()
-      dark.dispose()
-      for (const k in glow) glow[k].dispose()
-      if (laser) (laser.material as THREE.Material).dispose()
-    },
-  }
+  const parts: TemplatePart[] = []
+  const glowKeys: string[] = []
+  group.traverse((o) => {
+    const mesh = o as THREE.Mesh
+    if (!mesh.isMesh) return
+    const bucket = (mesh.userData.matKey as string | undefined) ?? 'dark'
+    parts.push({ mesh, bucket })
+    if (bucket.startsWith('glow:')) {
+      const key = bucket.slice(5)
+      if (!glowKeys.includes(key)) glowKeys.push(key)
+    }
+  })
+  rig = { kind, group, nodes, base, parts, glowKeys }
+  rigs.set(kind, rig)
+  return rig
+}
+
+// ─── Straggler outline (shared inverted-hull materials, instanced) ───────────
+// Two shells per part InstancedMesh: a depth-tested bright rim, and a faint
+// depth-ignoring silhouette so the last few enemies read through cover. Shared
+// materials keep this to two uniform writes per frame; hull meshes reuse the
+// part geometry AND the part's instanceMatrix (Enemies.instanced.ts).
+
+function outlineShader(grow: number, r: number, g: number, b: number, alpha: number, depthTest: boolean): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    uniforms: { uPulse: { value: 1 }, uColor: { value: new THREE.Color(r, g, b) }, uAlpha: { value: alpha } },
+    vertexShader: /* glsl */ `
+void main(){
+  vec3 p = position + normal * ${grow.toFixed(3)};
+  #ifdef USE_INSTANCING
+    p = (instanceMatrix * vec4(p, 1.0)).xyz;
+  #endif
+  gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0);
+}`,
+    fragmentShader: /* glsl */ `
+uniform vec3 uColor;
+uniform float uPulse, uAlpha;
+void main(){ gl_FragColor = vec4(uColor * uPulse, uAlpha); }`,
+    side: THREE.BackSide,
+    transparent: true,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    depthTest,
+  })
+}
+
+let rimMat: THREE.ShaderMaterial | null = null
+let xrayMat: THREE.ShaderMaterial | null = null
+
+export function outlineMaterials(): { rim: THREE.ShaderMaterial; xray: THREE.ShaderMaterial } {
+  if (!rimMat) rimMat = outlineShader(0.035, 3.2, 0.9, 0.3, 0.9, true)
+  if (!xrayMat) xrayMat = outlineShader(0.05, 1.3, 0.42, 0.16, 0.45, false)
+  return { rim: rimMat, xray: xrayMat }
+}
+
+/** Animate the shared outline pulse; call once per frame from the Enemies loop. */
+export function updateOutlinePulse(time: number): void {
+  if (!rimMat || !xrayMat) return
+  const s = Math.sin(time * 7)
+  rimMat.uniforms.uPulse.value = 0.85 + 0.4 * s
+  xrayMat.uniforms.uPulse.value = 0.55 + 0.25 * s
+}
+
+/** Shared unit-box geometry (sniper laser sight instancing needs it too). */
+export function unitBoxGeometry(): THREE.BufferGeometry {
+  return boxG(1, 1, 1)
 }

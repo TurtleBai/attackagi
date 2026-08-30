@@ -14,8 +14,8 @@ First-person camera at eye height `PLAYER_EYE`. Fast base walk speed `PLAYER_SPE
 
 ## Weapons (keys 1/2/3 to select)
 
-1. **Pistol** (key 1): left-click fires, hitscan. Mag `PISTOL_MAG` = 8, must reload (R or auto on empty, `PISTOL_RELOAD` s) every 8 shots. Starts with 8 in the gun + `PISTOL_RESERVE_START` = 40 reserve. Damage `PISTOL_DAMAGE`. Ammo crates refill the **entire reserve**.
-2. **Baseball bat** (key 2): melee, left-click swings (`BAT_DAMAGE`, range `BAT_RANGE`, arc `BAT_ARC`). **Holding** left mouse charges the swing — reaching full charge takes `BAT_CHARGE_TIME` = 5s; the bat **flashes when max charged**; a max-charged swing does **3×** damage (`BAT_CHARGED_MULT`). Partial charge scales linearly between 1× and 3×.
+1. **Pistol** (key 1): full-auto hitscan — fires while left mouse is held (cadence `PISTOL_FIRE_INTERVAL`). Mag `PISTOL_MAG` = 8, must reload (R or auto on empty, `PISTOL_RELOAD` s) every 8 shots. Starts with 8 in the gun + `PISTOL_RESERVE_START` = 40 reserve. Damage `PISTOL_DAMAGE`. Ammo crates refill the **entire reserve**.
+2. **Baseball bat** (key 2): melee, left-click swings (`BAT_DAMAGE`, range `BAT_RANGE`, arc `BAT_ARC`). **Holding** left mouse charges the swing — reaching full charge takes `BAT_CHARGE_TIME` = 2.5s; the bat **flashes when max charged**; a max-charged swing does **3×** damage (`BAT_CHARGED_MULT`). Partial charge scales linearly between 1× and 3×.
 3. **Molotov cocktail** (key 3): right-click aims — show the arc trajectory line silhouette + landing area disc. Left-click (while aiming) throws: ballistic arc, explodes on impact (`MOLOTOV_DAMAGE`, radius `MOLOTOV_RADIUS`) and ignites a ground fire patch lasting `FIRE_DURATION` doing `FIRE_DPS` damage/s. Starts with `MOLOTOV_START` = 2 bottles; an ammo crate gives `MOLOTOV_PER_CRATE` = 2 more (up to capacity).
 
 **Ammo crates**: spawned by the Director during waves (`CRATE_INTERVAL`, max `CRATE_MAX` alive). Walk over to collect: refills full pistol reserve + 2 molotovs.

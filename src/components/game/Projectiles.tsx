@@ -50,6 +50,8 @@ const ONE = new THREE.Vector3(1, 1, 1)
 // Module-local sim state (hard-reset on runId change)
 let smokeAcc = 0
 let smokeHead = 0
+let lastPuffTime = -1e4 // world.time of the most recent rocket smoke puff
+let frozenSynced = false // instance buffers already synced since the sim froze
 
 // ─── Shaders ─────────────────────────────────────────────────────────────────
 
@@ -366,7 +368,9 @@ function getShared(): Shared {
     depthWrite: false,
   })
   const smoke = makeInstanced(smokeGeo, smokeMat, SMOKE_POOL, 'rocketSmoke')
-  smoke.count = SMOKE_POOL // dead puffs are collapsed by the shader
+  // count is raised to SMOKE_POOL only while puffs can be alive (frameProjectiles);
+  // dead puffs inside that window are collapsed by the shader
+  smoke.count = 0
   smoke.renderOrder = 1
 
   shared = {
@@ -380,8 +384,11 @@ function getShared(): Shared {
 function hardReset(sh: Shared): void {
   smokeAcc = 0
   smokeHead = 0
+  lastPuffTime = -1e4
+  frozenSynced = false
   ;(sh.smokeBirth.array as Float32Array).fill(-1e4)
   sh.smokeBirth.needsUpdate = true
+  sh.smoke.count = 0
   sh.ranger.count = 0
   sh.boss.count = 0
   sh.molotov.count = 0
@@ -485,6 +492,7 @@ function spawnPuff(sh: Shared, p: Projectile): void {
   sh.smoke.instanceMatrix.needsUpdate = true
   sh.smokeBirth.needsUpdate = true
   sh.smokeSeed.needsUpdate = true
+  lastPuffTime = world.time
 }
 
 function simulate(step: number, sh: Shared): void {
@@ -581,9 +589,15 @@ function tickHazards(step: number): void {
       const radius = h.radius ?? 0
       if (!pos) continue
       if (h.playerFire) {
-        // player-owned fire cooks enemies only
-        const victims = world.enemiesInCircle(pos, radius)
-        for (const e of victims) world.damageEnemy(e.id, h.dps * step)
+        // player-owned fire cooks enemies only (inline circle test — avoids
+        // enemiesInCircle's per-frame array allocation in this hot loop)
+        for (const e of world.enemies.values()) {
+          if (e.hp <= 0) continue
+          const dx = e.pos.x - pos.x
+          const dz = e.pos.z - pos.z
+          const rr = radius + e.radius
+          if (dx * dx + dz * dz <= rr * rr) world.damageEnemy(e.id, h.dps * step)
+        }
       } else if (world.playerInCircle(pos, radius)) {
         world.damagePlayer(h.dps * step)
       }
@@ -667,14 +681,20 @@ function syncRender(sh: Shared): void {
   sh.flame.count = nMol
   sh.rocket.count = nRocket
   sh.glow.count = nRocket
-  sh.ranger.instanceMatrix.needsUpdate = true
-  sh.boss.instanceMatrix.needsUpdate = true
-  sh.molotov.instanceMatrix.needsUpdate = true
-  sh.flame.instanceMatrix.needsUpdate = true
-  sh.rocket.instanceMatrix.needsUpdate = true
-  sh.glow.instanceMatrix.needsUpdate = true
-  if (nMol > 0) sh.flameSeed.needsUpdate = true
-  if (nRocket > 0) sh.glowSeed.needsUpdate = true
+  // flag uploads only for pools with live instances — idle pools (count 0)
+  // draw nothing, so re-uploading their stale buffers every frame is waste
+  if (nRanger > 0) sh.ranger.instanceMatrix.needsUpdate = true
+  if (nBoss > 0) sh.boss.instanceMatrix.needsUpdate = true
+  if (nMol > 0) {
+    sh.molotov.instanceMatrix.needsUpdate = true
+    sh.flame.instanceMatrix.needsUpdate = true
+    sh.flameSeed.needsUpdate = true
+  }
+  if (nRocket > 0) {
+    sh.rocket.instanceMatrix.needsUpdate = true
+    sh.glow.instanceMatrix.needsUpdate = true
+    sh.glowSeed.needsUpdate = true
+  }
 }
 
 // ─── Component ───────────────────────────────────────────────────────────────
@@ -683,9 +703,14 @@ function syncRender(sh: Shared): void {
 function frameProjectiles(elapsed: number, dt: number): void {
   const sh = getShared()
   const step = Math.min(dt, 0.05)
-  if (simRunning(useGame.getState().phase)) simulate(step, sh)
-  // render sync always runs so projectiles stay visible (frozen) during pauses
-  syncRender(sh)
+  const running = simRunning(useGame.getState().phase)
+  if (running) simulate(step, sh)
+  // sync every sim frame, plus once more when the sim freezes so projectiles
+  // stay visible (frozen) during pauses without re-uploading unchanged buffers
+  if (running || !frozenSynced) syncRender(sh)
+  frozenSynced = !running
+  // GPU-aged smoke pool: draw its 288 quads only while a puff can be alive
+  sh.smoke.count = world.time - lastPuffTime < SMOKE_LIFE + 0.05 ? SMOKE_POOL : 0
   sh.flameMat.uniforms.uTime.value = elapsed
   sh.glowMat.uniforms.uTime.value = elapsed
   sh.smokeMat.uniforms.uTime.value = world.time

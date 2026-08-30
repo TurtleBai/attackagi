@@ -292,47 +292,60 @@ export function floorDetailNormal(): THREE.Texture {
 
 // ─── Skyline towers (sparse emissive windows over near-black hull) ───────────
 
-export function skylineTexture(seed: number): THREE.CanvasTexture {
-  return canvasTex(`arena:skyline:${seed}`, 256, 512, (ctx, w, h) => {
-    ctx.fillStyle = '#07090f'
-    ctx.fillRect(0, 0, w, h)
-    const rnd = seededRandom(seed)
-    const fbm = makeFbm(seed + 3)
-    // subtle vertical panel variation
-    for (let x = 0; x < w; x += 16) {
-      ctx.fillStyle = `rgba(${14 + rnd() * 10 | 0},${16 + rnd() * 10 | 0},${24 + rnd() * 12 | 0},0.5)`
-      ctx.fillRect(x, 0, 16, h)
-    }
-    const cols = 10, rows = 30
-    const cw = w / cols, rh = h / rows
-    for (let ry = 0; ry < rows; ry++) {
-      for (let cx = 0; cx < cols; cx++) {
-        const lit = rnd()
-        if (lit > 0.92) {
-          const warm = rnd() > 0.4
-          const bright = 0.5 + rnd() * 0.5
-          ctx.fillStyle = warm
-            ? `rgba(255,196,130,${bright})`
-            : `rgba(150,190,255,${bright * 0.85})`
-          ctx.fillRect(cx * cw + cw * 0.22, ry * rh + rh * 0.28, cw * 0.56, rh * 0.44)
-        } else if (lit > 0.86) {
-          ctx.fillStyle = `rgba(70,84,110,${0.3 + rnd() * 0.3})`
-          ctx.fillRect(cx * cw + cw * 0.22, ry * rh + rh * 0.28, cw * 0.56, rh * 0.44)
-        }
+function paintSkyline(ctx: CanvasRenderingContext2D, x0: number, w: number, h: number, seed: number): void {
+  ctx.save()
+  ctx.translate(x0, 0)
+  ctx.fillStyle = '#07090f'
+  ctx.fillRect(0, 0, w, h)
+  const rnd = seededRandom(seed)
+  const fbm = makeFbm(seed + 3)
+  // subtle vertical panel variation
+  for (let x = 0; x < w; x += 16) {
+    ctx.fillStyle = `rgba(${14 + rnd() * 10 | 0},${16 + rnd() * 10 | 0},${24 + rnd() * 12 | 0},0.5)`
+    ctx.fillRect(x, 0, 16, h)
+  }
+  const cols = 10, rows = 30
+  const cw = w / cols, rh = h / rows
+  for (let ry = 0; ry < rows; ry++) {
+    for (let cx = 0; cx < cols; cx++) {
+      const lit = rnd()
+      if (lit > 0.92) {
+        const warm = rnd() > 0.4
+        const bright = 0.5 + rnd() * 0.5
+        ctx.fillStyle = warm
+          ? `rgba(255,196,130,${bright})`
+          : `rgba(150,190,255,${bright * 0.85})`
+        ctx.fillRect(cx * cw + cw * 0.22, ry * rh + rh * 0.28, cw * 0.56, rh * 0.44)
+      } else if (lit > 0.86) {
+        ctx.fillStyle = `rgba(70,84,110,${0.3 + rnd() * 0.3})`
+        ctx.fillRect(cx * cw + cw * 0.22, ry * rh + rh * 0.28, cw * 0.56, rh * 0.44)
       }
     }
-    // haze gradient toward base
-    const g = ctx.createLinearGradient(0, 0, 0, h)
-    g.addColorStop(0, 'rgba(11,14,26,0)')
-    g.addColorStop(1, 'rgba(11,14,26,0.85)')
-    ctx.fillStyle = g
-    ctx.fillRect(0, 0, w, h)
-    // roofline greeble noise
-    for (let x = 0; x < w; x++) {
-      const n = fbm(x / 30, 0.5, 3)
-      ctx.fillStyle = '#05060b'
-      ctx.fillRect(x, 0, 1, 2 + n * 6)
-    }
+  }
+  // haze gradient toward base
+  const g = ctx.createLinearGradient(0, 0, 0, h)
+  g.addColorStop(0, 'rgba(11,14,26,0)')
+  g.addColorStop(1, 'rgba(11,14,26,0.85)')
+  ctx.fillStyle = g
+  ctx.fillRect(0, 0, w, h)
+  // roofline greeble noise
+  for (let x = 0; x < w; x++) {
+    const n = fbm(x / 30, 0.5, 3)
+    ctx.fillStyle = '#05060b'
+    ctx.fillRect(x, 0, 1, 2 + n * 6)
+  }
+  ctx.restore()
+}
+
+/**
+ * Both skyline variants side-by-side in ONE atlas (left half seedA, right half
+ * seedB) so every tower shares a single instanced draw; towers pick a half via
+ * a per-instance `aTexSel` uv offset (0 → x∈[0,.5], 1 → x∈[.5,1]).
+ */
+export function skylineAtlasTexture(seedA: number, seedB: number): THREE.CanvasTexture {
+  return canvasTex(`arena:skylineAtlas:${seedA}:${seedB}`, 512, 512, (ctx) => {
+    paintSkyline(ctx, 0, 256, 512, seedA)
+    paintSkyline(ctx, 256, 256, 512, seedB)
   }, { srgb: true })
 }
 

@@ -17,7 +17,7 @@ import {
 // ─────────────────────────────────────────────────────────────────────────────
 
 const MAX_FIRES = 10
-const FLAMES_PER = 10
+const FLAMES_PER = 8 // was 10 — modest additive-overdraw cut, look preserved
 const SMOKE_PER = 3
 const EMBERS_PER = 7
 const FIRE_LIGHTS = 3
@@ -87,6 +87,7 @@ export class FirePatches {
       geo.setAttribute('aSpan', this.flameSpan)
       this.flameMat = flameMaterial()
       this.flames = new THREE.InstancedMesh(geo, this.flameMat, n)
+      this.flames.count = 0 // raised in update() to cover live slots only
       this.flames.frustumCulled = false
       this.flames.renderOrder = 16
       parent.add(this.flames)
@@ -100,6 +101,7 @@ export class FirePatches {
       geo.setAttribute('aData', this.smokeData)
       this.smokeMat = smokeMaterial()
       this.smoke = new THREE.InstancedMesh(geo, this.smokeMat, n)
+      this.smoke.count = 0 // raised in update() to cover live slots only
       this.smoke.frustumCulled = false
       this.smoke.renderOrder = 17
       parent.add(this.smoke)
@@ -117,6 +119,7 @@ export class FirePatches {
       geo.setAttribute('aData', this.emberData)
       this.emberMat = emberMaterial()
       this.embers = new THREE.Points(geo, this.emberMat)
+      this.embers.geometry.setDrawRange(0, 0) // widened in update() for live slots
       this.embers.frustumCulled = false
       this.embers.renderOrder = 19
       parent.add(this.embers)
@@ -247,6 +250,15 @@ export class FirePatches {
       if (time > s.until + FIRE_TAIL) s.id = -1
     }
 
+    // draw only instances up to the highest live slot (in-shader collapse still
+    // hides dead slots inside the range) — with no fires burning, all three
+    // draw calls are skipped outright
+    let nLive = 0
+    for (let i = 0; i < this.slots.length; i++) if (this.slots[i].id !== -1) nLive = i + 1
+    this.flames.count = nLive * FLAMES_PER
+    this.smoke.count = nLive * SMOKE_PER
+    this.embers.geometry.setDrawRange(0, nLive * EMBERS_PER)
+
     this.flameMat.uniforms.uTime.value = time
     this.smokeMat.uniforms.uTime.value = time
     this.emberMat.uniforms.uTime.value = time
@@ -262,7 +274,9 @@ export class FirePatches {
       if (fade <= 0.005) { mesh.visible = false; continue }
       mesh.visible = true
       mesh.position.set(s.x, 0.05, s.z)
-      mesh.scale.setScalar(s.radius * 2.3)
+      // quad cropped from radius*2.3 to *2.0 (−24% fill); the shader rescales
+      // its coords so the visible glow footprint is unchanged
+      mesh.scale.setScalar(s.radius * 2.0)
       const u = this.glowMats[i].uniforms
       u.uTime.value = time
       u.uFade.value = fade
@@ -298,6 +312,9 @@ export class FirePatches {
 
   clear(): void {
     for (const s of this.slots) { s.id = -1; s.until = -100; s.birth = -100 }
+    this.flames.count = 0
+    this.smoke.count = 0
+    this.embers.geometry.setDrawRange(0, 0)
     ;(this.flameSpan.array as Float32Array).fill(-10)
     this.flameSpan.needsUpdate = true
     ;(this.smokeData.array as Float32Array).fill(-10)

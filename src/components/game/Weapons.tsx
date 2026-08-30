@@ -50,6 +50,7 @@ const _zAxis = new THREE.Vector3(0, 0, 1)
 
 interface LocalState {
   vt: number // visual clock (always advances)
+  triggerHeld: boolean // pistol full-auto: LMB held
   charging: boolean
   chargeT: number
   charge: number // 0..1 ratio
@@ -81,6 +82,7 @@ export function Weapons() {
 
   const st = useRef<LocalState>({
     vt: 0,
+    triggerHeld: false,
     charging: false, chargeT: 0, charge: 0,
     swingT: -1, swingCharge: 0, struck: true,
     reloadActive: false, reloadEnd: 0, reloadDur: 1,
@@ -98,6 +100,7 @@ export function Weapons() {
   // ── Actions (closures over stable st + global singletons) ──────────────────
 
   const hardReset = () => {
+    st.triggerHeld = false
     st.charging = false; st.chargeT = 0; st.charge = 0
     st.swingT = -1; st.swingCharge = 0; st.struck = true
     st.reloadActive = false; st.reloadEnd = 0
@@ -226,7 +229,9 @@ export function Weapons() {
       kind: 'molotov', pos: _p, vel: _v,
       radius: 0.25, damage: MOLOTOV_DAMAGE, ttl: 8, gravityScale: 1,
     })
-    s.set({ molotovs: s.molotovs - 1 })
+    const left = s.molotovs - 1
+    s.set({ molotovs: left, ...(left <= 0 ? { aimingMolotov: false } : null) })
+    if (left <= 0) st.aiming = false // out of bottles: drop out of aim mode
     events.emit('molotovThrow', {})
     st.throwT = 0
   }
@@ -234,6 +239,7 @@ export function Weapons() {
   const switchWeapon = (slot: WeaponSlot) => {
     const s = useGame.getState()
     if (s.weapon === slot) return
+    st.triggerHeld = false
     st.charging = false
     st.chargeT = 0
     st.charge = 0
@@ -283,12 +289,14 @@ export function Weapons() {
       if (!locked() || !running()) return
       const s = useGame.getState()
       if (e.button === 0) {
-        if (s.weapon === 1) tryFirePistol() // semi-auto: one shot per click
-        else if (s.weapon === 2) {
+        if (s.weapon === 1) {
+          st.triggerHeld = true // full-auto: keeps firing in the frame loop
+          tryFirePistol()
+        } else if (s.weapon === 2) {
           if (st.swingT < 0 && !st.charging) { st.charging = true; st.chargeT = 0; st.charge = 0 }
         } else if (s.weapon === 3 && st.aiming) throwMolotov()
       } else if (e.button === 2) {
-        if (s.weapon === 3 && !st.aiming) {
+        if (s.weapon === 3 && !st.aiming && s.molotovs > 0) {
           st.aiming = true
           s.set({ aimingMolotov: true })
         }
@@ -297,7 +305,10 @@ export function Weapons() {
 
     const onMouseUp = (e: MouseEvent) => {
       // releases always clear held state, even if the sim paused mid-hold
-      if (e.button === 0) releaseBat()
+      if (e.button === 0) {
+        st.triggerHeld = false
+        releaseBat()
+      }
       else if (e.button === 2) {
         if (st.aiming) {
           st.aiming = false
@@ -313,6 +324,7 @@ export function Weapons() {
     const onLockChange = () => {
       if (document.pointerLockElement) return
       // lock lost: drop transient held inputs
+      st.triggerHeld = false
       if (st.charging) {
         st.charging = false
         st.chargeT = 0
@@ -444,6 +456,9 @@ export function Weapons() {
     // ── gameplay timers (early-out unless the sim is running) ──
     if (running) {
       if (st.reloadActive && world.time >= st.reloadEnd) completeReload()
+
+      // full-auto pistol: held trigger re-fires at stats.fireInterval cadence
+      if (st.triggerHeld && s.weapon === 1 && locked) tryFirePistol()
 
       if (st.charging && s.weapon === 2 && locked) {
         st.chargeT += step

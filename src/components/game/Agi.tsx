@@ -54,6 +54,10 @@ const _z = new THREE.Vector3()
 const _root = new THREE.Vector3()
 const _m4 = new THREE.Matrix4()
 const _q = new THREE.Quaternion()
+const _q2 = new THREE.Quaternion()
+const _s = new THREE.Vector3()
+const _pp = new THREE.Vector3()
+const _c = new THREE.Color()
 
 // ─── local state ─────────────────────────────────────────────────────────────
 
