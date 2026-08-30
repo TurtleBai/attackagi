@@ -253,7 +253,8 @@ class VfxSystems {
 
   onBeamFire(p: EventMap['beamFire']): void {
     if (p.kind === 'sniper') {
-      this.beamFlashes.spawn(p.a, p.b, 0.35, 3.0, 1.5, 1.3, 0.22)
+      // green to match the sniper's lens/sight identity (floor telegraphs stay red)
+      this.beamFlashes.spawn(p.a, p.b, 0.35, 1.1, 3.0, 1.5, 0.22)
     } else if (p.kind === 'deathBeam') {
       this.beamFlashes.spawn(p.a, p.b, 5.5, 3.2, 1.0, 0.8, 0.5)
       this.trauma = Math.min(1, this.trauma + 0.25)

@@ -56,7 +56,7 @@ function makeSet(key: string, size: number, fn: PaintFn, normalStrength = 2.0): 
   return set
 }
 
-/** Brushed dark gunmetal with edge scratches — pistol slide/frame family. */
+/** Brushed dark gunmetal with edge scratches — revolver frame/barrel/cylinder family. */
 function gunmetalSet(): TexSet {
   const fbm = makeFbm(9001)
   return makeSet('gunmetal', 256, (x, y, kind) => {
@@ -71,25 +71,6 @@ function gunmetalSet(): TexSet {
     if (kind === 'height') return return3(128 + streak * 14 + spec * 9 - scratch * 34)
     return return3(122 + streak * 48 + spec * 18 - scratch * 72)
   }, 1.6)
-}
-
-/** Molded polymer stipple — pistol grip panels. */
-function stippleSet(): TexSet {
-  const fbm = makeFbm(9002)
-  return makeSet('stipple', 128, (x, y, kind) => {
-    const cell = 13
-    const row = Math.floor(y / cell)
-    const xx = (x + (row % 2) * (cell / 2)) % cell
-    const yy = y % cell
-    const dx = xx - cell / 2
-    const dy = yy - cell / 2
-    const dist = Math.sqrt(dx * dx + dy * dy)
-    const dot = THREE.MathUtils.smoothstep(4.4 - dist, 0, 2.4)
-    const n = fbm(x / 24, y / 24, 3)
-    if (kind === 'albedo') return3(35 + dot * 15 + n * 9)
-    if (kind === 'height') return3(110 + dot * 104)
-    return return3(226 - dot * 34 + n * 16)
-  }, 2.6)
 }
 
 /** Ash bat wood: long grain, wavy rings, pale scuffs and dings. */
@@ -227,6 +208,32 @@ function mergeParts(geoms: THREE.BufferGeometry[]): THREE.BufferGeometry {
   return mergeGeometries(parts, false) ?? parts[0]
 }
 
+/**
+ * Revolver cylinder body extruded along Z: a circle with 6 shallow flutes scalloped
+ * BETWEEN the chambers (chambers sit at 30° + k·60°, so the top chamber lines up
+ * with the bore). Real silhouette relief — the flutes read in profile as it spins.
+ */
+function flutedCylinderGeo(radius: number, fluteDepth: number, length: number): THREE.BufferGeometry {
+  const shape = new THREE.Shape()
+  const N = 96
+  for (let i = 0; i < N; i++) {
+    const a = (i / N) * Math.PI * 2
+    const c = Math.max(0, Math.cos(a * 6)) // peaks midway between chambers
+    const r = radius - fluteDepth * c * c
+    if (i === 0) shape.moveTo(Math.cos(a) * r, Math.sin(a) * r)
+    else shape.lineTo(Math.cos(a) * r, Math.sin(a) * r)
+  }
+  shape.closePath()
+  const g = new THREE.ExtrudeGeometry(shape, {
+    depth: Math.max(0.001, length - 0.003),
+    bevelEnabled: true, bevelThickness: 0.0015, bevelSize: 0.0015, bevelSegments: 2,
+    curveSegments: 4, steps: 1,
+  })
+  g.center()
+  scaleUV(g, 30)
+  return g
+}
+
 // ─── Rig ─────────────────────────────────────────────────────────────────────
 
 export interface WeaponRig {
@@ -234,10 +241,19 @@ export interface WeaponRig {
   sway: THREE.Group
   pistol: {
     group: THREE.Group
-    slide: THREE.Group
+    /** swing-out crane: rotate .z to 0..~2.05 to open (carries cylinder + ejector) */
+    crane: THREE.Group
+    /** 6-shot cylinder: rotate .z around the barrel axis to index/spin */
+    cylinder: THREE.Group
+    /** hammer pivot: rotate .x positive to cock the spur back */
+    hammer: THREE.Group
+    /** ejector rod + extractor star: push .position.z positive for the eject flick */
+    ejector: THREE.Group
     muzzle: THREE.Object3D
     flash: THREE.Mesh
     flashMat: THREE.MeshBasicMaterial
+    /** cylinder-gap side vents — share flashMat, flicker with the muzzle flash */
+    ventFlash: THREE.Mesh
   }
   bat: {
     group: THREE.Group
@@ -265,12 +281,11 @@ export function getWeaponRig(): WeaponRig {
 
 function buildRig(): WeaponRig {
   const gm = gunmetalSet()
-  const st = stippleSet()
   const wd = woodSet()
   const tp = tapeSet()
   const cl = clothSet()
 
-  const slideMat = new THREE.MeshStandardMaterial({
+  const steelMat = new THREE.MeshStandardMaterial({
     map: gm.map, normalMap: gm.normalMap, roughnessMap: gm.roughnessMap,
     color: 0xd9dde2, metalness: 0.82, roughness: 1.0, normalScale: new THREE.Vector2(0.85, 0.85),
   })
@@ -282,90 +297,147 @@ function buildRig(): WeaponRig {
     map: gm.map, normalMap: gm.normalMap, roughnessMap: gm.roughnessMap,
     color: 0x53565c, metalness: 0.9, roughness: 1.0, normalScale: new THREE.Vector2(0.6, 0.6),
   })
-  const gripMat = new THREE.MeshStandardMaterial({
-    map: st.map, normalMap: st.normalMap, roughnessMap: st.roughnessMap,
-    metalness: 0.12, roughness: 1.0, normalScale: new THREE.Vector2(1.2, 1.2),
+  const boreMat = new THREE.MeshStandardMaterial({ color: 0x0b0c0e, metalness: 0.6, roughness: 0.5 })
+  const gripWoodMat = new THREE.MeshStandardMaterial({
+    map: wd.map, normalMap: wd.normalMap, roughnessMap: wd.roughnessMap,
+    color: 0xb5814e, metalness: 0.05, roughness: 1.0, normalScale: new THREE.Vector2(1.1, 1.1),
   })
   const dotMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(0.35, 2.8, 1.1), toneMapped: false })
 
-  // ── Pistol ── local axis: -Z forward, Y up; origin near the trigger.
+  // ── Revolver ── local axis: -Z forward, Y up; origin near the trigger.
+  // Bore axis y=0.072 (lines up with the TOP chamber); cylinder axis y=0.0575.
+  // Cylinder window z −0.054..−0.010; barrel z −0.062..−0.207 (~5.7").
   const pistolGroup = new THREE.Group()
-  const slideGroup = new THREE.Group()
-  slideGroup.position.set(0, 0.062, 0)
 
-  const slideMain = new THREE.Mesh(mergeParts([
-    (() => { const g = extrudeRR(0.042, 0.046, 0.235, 0.013); g.translate(0, 0, -0.035); return g })(),
-    box(0.0065, 0.010, 0.009, -0.0078, 0.028, 0.076), // rear sight L
-    box(0.0065, 0.010, 0.009, 0.0078, 0.028, 0.076), // rear sight R
-    box(0.006, 0.012, 0.007, 0, 0.029, -0.138), // front sight post
-  ]), slideMat)
+  const staticFrame = new THREE.Mesh(mergeParts([
+    (() => { const g = extrudeRR(0.030, 0.014, 0.078, 0.004); g.translate(0, 0.0885, -0.030); return g })(), // top strap over the cylinder
+    (() => { const g = extrudeRR(0.034, 0.058, 0.036, 0.008); g.translate(0, 0.059, 0.020); return g })(), // rear frame / hammer channel
+    (() => { const g = new THREE.CylinderGeometry(0.027, 0.027, 0.010, 20); g.rotateX(Math.PI / 2); g.translate(0, 0.0575, -0.002); return g })(), // recoil shield
+    box(0.030, 0.052, 0.014, 0, 0.062, -0.061), // front post (barrel lug)
+    box(0.020, 0.012, 0.050, 0, 0.027, -0.030), // bottom strap under the cylinder
+    box(0.028, 0.034, 0.028, 0, 0.024, 0.040, -0.44), // backstrap bridge into the grip
+    box(0.024, 0.026, 0.016, 0, 0.040, -0.060), // crane housing
+    (() => { const g = new THREE.TorusGeometry(0.024, 0.0042, 8, 20, Math.PI * 1.3); g.rotateY(Math.PI / 2); g.rotateX(0.9); g.translate(0, 0.004, -0.014); return g })(), // trigger guard
+    (() => { const g = new THREE.CylinderGeometry(0.0125, 0.0115, 0.008, 14); g.rotateX(Math.PI / 2); g.translate(0, 0.072, -0.062); return g })(), // forcing cone
+    (() => { const g = new THREE.CylinderGeometry(0.0118, 0.0105, 0.145, 16); g.rotateX(Math.PI / 2); g.translate(0, 0.072, -0.1355); return g })(), // barrel
+    (() => { const g = new THREE.CylinderGeometry(0.0122, 0.0122, 0.010, 16); g.rotateX(Math.PI / 2); g.translate(0, 0.072, -0.202); return g })(), // muzzle crown
+    box(0.009, 0.005, 0.150, 0, 0.0855, -0.128), // top sight rib
+    (() => { const g = extrudeRR(0.017, 0.026, 0.132, 0.006); g.translate(0, 0.0525, -0.130); return g })(), // full underlug (ejector-rod shroud)
+  ]), frameMat)
 
-  const serr: THREE.BufferGeometry[] = []
-  for (let i = 0; i < 7; i++) serr.push(box(0.0455, 0.028, 0.003, 0, 0, 0.030 + i * 0.0068)) // rear serrations
-  for (let i = 0; i < 4; i++) serr.push(box(0.0455, 0.024, 0.003, 0, 0, -0.118 - i * 0.0068)) // front serrations
-  serr.push(box(0.0035, 0.015, 0.036, 0.0215, 0.006, 0.012)) // ejection port block
-  serr.push((() => { const g = new THREE.CylinderGeometry(0.011, 0.011, 0.036, 14); g.rotateX(Math.PI / 2); g.translate(0, 0.004, -0.156); return g })()) // barrel
-  const slideAcc = new THREE.Mesh(mergeParts(serr), accentMat)
+  const staticAccent = new THREE.Mesh(mergeParts([
+    box(0.005, 0.022, 0.0055, 0, 0.004, -0.017, 0.3), // curved trigger
+    box(0.005, 0.010, 0.020, -0.019, 0.055, 0.010), // cylinder release latch (left side)
+    box(0.0055, 0.015, 0.016, 0, 0.0955, -0.196), // front sight blade
+    box(0.0068, 0.0065, 0.014, -0.0088, 0.0985, 0.002), // rear notch L
+    box(0.0068, 0.0065, 0.014, 0.0088, 0.0985, 0.002), // rear notch R
+    box(0.007, 0.010, 0.007, 0, -0.086, 0.100), // lanyard mount
+    (() => { const g = new THREE.TorusGeometry(0.0068, 0.0018, 6, 14); g.rotateY(Math.PI / 2); g.translate(0, -0.0955, 0.100); return g })(), // lanyard ring
+  ]), accentMat)
 
   const dots = new THREE.Mesh(mergeParts([
-    (() => { const g = new THREE.SphereGeometry(0.0017, 6, 6); g.translate(-0.0078, 0.030, 0.0812); return g })(),
-    (() => { const g = new THREE.SphereGeometry(0.0017, 6, 6); g.translate(0.0078, 0.030, 0.0812); return g })(),
-    (() => { const g = new THREE.SphereGeometry(0.0017, 6, 6); g.translate(0, 0.0315, -0.1344); return g })(),
+    (() => { const g = new THREE.SphereGeometry(0.0017, 6, 6); g.translate(-0.0088, 0.1005, 0.0095); return g })(), // rear sight L
+    (() => { const g = new THREE.SphereGeometry(0.0017, 6, 6); g.translate(0.0088, 0.1005, 0.0095); return g })(), // rear sight R
+    (() => { const g = new THREE.SphereGeometry(0.0019, 6, 6); g.translate(0, 0.1, -0.1875); return g })(), // front blade
   ]), dotMat)
 
+  // contoured wood grip — raked back, palm swell, flared butt (never animates)
+  const rake = (g: THREE.BufferGeometry) => { g.rotateX(-0.44); g.translate(0, 0.010, 0.046); return g }
+  const gripWood = new THREE.Mesh(mergeParts([
+    rake((() => { const g = extrudeRR(0.030, 0.046, 0.100, 0.012); g.rotateX(Math.PI / 2); g.translate(0, -0.052, 0.004); return g })()), // core
+    rake((() => { const g = new THREE.SphereGeometry(0.021, 14, 10); g.scale(0.85, 1.6, 1.05); g.translate(0, -0.050, 0.004); return g })()), // palm swell
+    rake((() => { const g = extrudeRR(0.034, 0.052, 0.020, 0.009); g.rotateX(Math.PI / 2); g.translate(0, -0.094, 0.006); return g })()), // butt flare
+  ]), gripWoodMat)
+
+  // hammer — pivot at the frame rear; rotation.x > 0 cocks the spur back
+  const hammerGroup = new THREE.Group()
+  hammerGroup.position.set(0, 0.06, 0.026)
+  hammerGroup.add(new THREE.Mesh(mergeParts([
+    box(0.009, 0.028, 0.013, 0, 0.008, 0.002), // body
+    box(0.0075, 0.022, 0.0075, 0, 0.026, 0.010, 0.45), // spur shank
+    box(0.014, 0.005, 0.017, 0, 0.0365, 0.0175, 0.30), // checkered spur pad
+    box(0.005, 0.007, 0.012, 0, 0.004, -0.008), // firing nose
+  ]), accentMat))
+
+  // crane — pivot low-left of the cylinder window, parallel to the bore.
+  // rotation.z 0..~2.05 swings the whole cylinder+ejector assembly out to the left.
+  const craneGroup = new THREE.Group()
+  craneGroup.position.set(-0.013, 0.040, -0.045)
+  const craneArm = new THREE.Mesh(mergeParts([
+    box(0.009, 0.028, 0.011, 0.004, 0.010, 0.002), // yoke arm up from the pivot
+    (() => { const g = new THREE.CylinderGeometry(0.005, 0.005, 0.026, 10); g.rotateX(Math.PI / 2); g.translate(0.013, 0.0175, -0.004); return g })(), // cylinder axis pin
+  ]), frameMat)
+
+  // 6-shot fluted cylinder — spins around its own Z (crane-local (0.013, 0.0175) = bore-centered when shut)
+  const cylinderGroup = new THREE.Group()
+  cylinderGroup.position.set(0.013, 0.0175, 0.013)
+  const boreGeos: THREE.BufferGeometry[] = []
+  const rimGeos: THREE.BufferGeometry[] = []
+  const detailGeos: THREE.BufferGeometry[] = []
+  for (let k = 0; k < 6; k++) {
+    const a = Math.PI / 6 + (k * Math.PI) / 3 // chamber centers (top chamber at 90°)
+    const cx = Math.cos(a) * 0.0145
+    const cy = Math.sin(a) * 0.0145
+    const bore = new THREE.CylinderGeometry(0.0062, 0.0062, 0.002, 12)
+    bore.rotateX(Math.PI / 2)
+    bore.translate(cx, cy, -0.0214) // dark disc barely proud of the front face
+    boreGeos.push(bore)
+    const rim = new THREE.TorusGeometry(0.0069, 0.0009, 6, 16) // chamber-mouth chamfer ring
+    rim.translate(cx, cy, -0.0221)
+    rimGeos.push(rim)
+    const notch = new THREE.BoxGeometry(0.0045, 0.0016, 0.007) // cylinder stop notch
+    notch.translate(0, 0.0231, 0.008)
+    notch.rotateZ(a - Math.PI / 2)
+    detailGeos.push(notch)
+  }
+  detailGeos.push((() => { const g = new THREE.CylinderGeometry(0.0085, 0.0085, 0.0035, 6); g.rotateX(Math.PI / 2); g.translate(0, 0, 0.0225); return g })()) // rear ratchet
+  cylinderGroup.add(
+    new THREE.Mesh(flutedCylinderGeo(0.0235, 0.0028, 0.044), steelMat),
+    new THREE.Mesh(mergeParts(boreGeos), boreMat),
+    new THREE.Mesh(mergeParts(rimGeos), frameMat),
+    new THREE.Mesh(mergeParts(detailGeos), accentMat),
+  )
+
+  // ejector rod + extractor star — shrouded by the underlug when shut; slides +Z on the flick
+  const ejectorGroup = new THREE.Group()
+  ejectorGroup.add(new THREE.Mesh(mergeParts([
+    (() => { const g = new THREE.CylinderGeometry(0.0032, 0.0032, 0.046, 10); g.rotateX(Math.PI / 2); g.translate(0.013, 0.0175, -0.030); return g })(), // rod
+    (() => { const g = new THREE.CylinderGeometry(0.0048, 0.0048, 0.009, 10); g.rotateX(Math.PI / 2); g.translate(0.013, 0.0175, -0.0555); return g })(), // knurled head
+    (() => { const g = new THREE.CylinderGeometry(0.0155, 0.0148, 0.0025, 6); g.rotateX(Math.PI / 2); g.translate(0.013, 0.0175, 0.0355); return g })(), // extractor star
+  ]), accentMat))
+  craneGroup.add(craneArm, cylinderGroup, ejectorGroup)
+
   const muzzle = new THREE.Object3D()
-  muzzle.position.set(0, 0.006, -0.176)
+  muzzle.position.set(0, 0.072, -0.21)
 
   const flashMat = new THREE.MeshBasicMaterial({
-    map: flashTexture(), color: new THREE.Color(2.6, 1.9, 1.0),
+    map: flashTexture(), color: new THREE.Color(2.9, 2.0, 1.0),
     transparent: true, opacity: 0, blending: THREE.AdditiveBlending,
     depthWrite: false, side: THREE.DoubleSide, toneMapped: false,
   })
+  // magnum-scale star: big core + 4 radial petals + crossed forward spikes
   const flash = new THREE.Mesh(mergeParts([
-    new THREE.PlaneGeometry(0.11, 0.11),
-    (() => { const g = new THREE.PlaneGeometry(0.24, 0.055); g.rotateY(Math.PI / 2); g.translate(0, 0, -0.1); return g })(),
-    (() => { const g = new THREE.PlaneGeometry(0.24, 0.055); g.rotateY(Math.PI / 2); g.rotateZ(Math.PI / 2); g.translate(0, 0, -0.1); return g })(),
+    new THREE.PlaneGeometry(0.16, 0.16),
+    new THREE.PlaneGeometry(0.34, 0.07),
+    (() => { const g = new THREE.PlaneGeometry(0.30, 0.06); g.rotateZ(Math.PI / 3); return g })(),
+    (() => { const g = new THREE.PlaneGeometry(0.30, 0.06); g.rotateZ(-Math.PI / 3); return g })(),
+    (() => { const g = new THREE.PlaneGeometry(0.34, 0.075); g.rotateY(Math.PI / 2); g.translate(0, 0, -0.13); return g })(),
+    (() => { const g = new THREE.PlaneGeometry(0.34, 0.075); g.rotateY(Math.PI / 2); g.rotateZ(Math.PI / 2); g.translate(0, 0, -0.13); return g })(),
   ]), flashMat)
-  flash.position.set(0, 0.006, -0.196)
+  flash.position.set(0, 0.072, -0.216)
   flash.visible = false
-  slideGroup.add(slideMain, slideAcc, dots, muzzle, flash)
 
-  // The grip assembly never animates — bake its transform (pos 0,-0.002,0.048;
-  // rot.x −0.30) into the geometries and fold them into the frame/accent meshes.
-  const gripBake = (g: THREE.BufferGeometry) => {
-    g.rotateX(-0.30)
-    g.translate(0, -0.002, 0.048)
-    return g
-  }
+  // side vents blasting out of the barrel/cylinder gap
+  const ventFlash = new THREE.Mesh(mergeParts([
+    new THREE.PlaneGeometry(0.085, 0.085),
+    new THREE.PlaneGeometry(0.26, 0.034),
+    (() => { const g = new THREE.PlaneGeometry(0.19, 0.028); g.rotateZ(0.5); return g })(),
+    (() => { const g = new THREE.PlaneGeometry(0.19, 0.028); g.rotateZ(-0.5); return g })(),
+  ]), flashMat)
+  ventFlash.position.set(0, 0.072, -0.0575)
+  ventFlash.visible = false
 
-  const staticMain = new THREE.Mesh(mergeParts([
-    (() => { const g = extrudeRR(0.040, 0.035, 0.150, 0.009); g.translate(0, 0.0215, -0.028); return g })(),
-    (() => { const g = new THREE.TorusGeometry(0.024, 0.0045, 8, 18, Math.PI * 1.3); g.rotateY(Math.PI / 2); g.rotateX(0.9); g.translate(0, -0.002, -0.005); return g })(), // trigger guard
-    box(0.030, 0.012, 0.030, 0, 0.030, 0.062), // beavertail
-    gripBake((() => { // grip core
-      const g = extrudeRR(0.034, 0.055, 0.115, 0.010)
-      g.rotateX(Math.PI / 2)
-      g.translate(0, -0.045, 0)
-      return g
-    })()),
-  ]), frameMat)
-
-  const staticAcc = new THREE.Mesh(mergeParts([
-    box(0.042, 0.005, 0.009, 0, 0.008, -0.075), // rail ribs
-    box(0.042, 0.005, 0.009, 0, 0.008, -0.089),
-    box(0.042, 0.005, 0.009, 0, 0.008, -0.103),
-    box(0.006, 0.022, 0.0055, 0, -0.004, -0.012, 0.28), // trigger
-    (() => { const g = new THREE.CylinderGeometry(0.004, 0.004, 0.044, 8); g.rotateZ(Math.PI / 2); g.translate(0, 0.028, 0.030); return g })(), // takedown pin
-    box(0.006, 0.008, 0.012, -0.021, 0.006, 0.024), // mag release
-    gripBake(box(0.040, 0.014, 0.062, 0, -0.104, 0.004)), // grip base plate
-  ]), accentMat)
-
-  const gripPanels = new THREE.Mesh(mergeParts([
-    gripBake(box(0.0022, 0.085, 0.046, -0.0185, -0.045, 0)),
-    gripBake(box(0.0022, 0.085, 0.046, 0.0185, -0.045, 0)),
-  ]), gripMat)
-
-  pistolGroup.add(slideGroup, staticMain, staticAcc, gripPanels)
+  pistolGroup.add(staticFrame, staticAccent, dots, gripWood, hammerGroup, craneGroup, muzzle, flash, ventFlash)
 
   // ── Baseball bat ── model built along +Y (knob at y=0), pivot lowered to the hands.
   const batMat = new THREE.MeshStandardMaterial({
@@ -478,7 +550,10 @@ function buildRig(): WeaponRig {
   return {
     root,
     sway,
-    pistol: { group: pistolGroup, slide: slideGroup, muzzle, flash, flashMat },
+    pistol: {
+      group: pistolGroup, crane: craneGroup, cylinder: cylinderGroup,
+      hammer: hammerGroup, ejector: ejectorGroup, muzzle, flash, flashMat, ventFlash,
+    },
     bat: { group: batGroup, inner: batInner, mat: batMat, shell, shellMat },
     molotov: { group: molotovGroup, bottle, liquid, flame, flameMat, ember },
   }

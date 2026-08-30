@@ -4,12 +4,18 @@ import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js
 import { chassisMaterial, darkMetalMaterial, glowMetal } from '@/game/gfx/materials'
 import type { EnemyKind } from '@/game/types'
 
-// chest-plate emblem placement per kind (torso-local; z sits just proud of the plate)
-export const DECAL_PLACEMENT: Record<EnemyKind, { y: number; z: number; s: number }> = {
-  melee: { y: 0.16, z: 0.245, s: 0.2 },
-  ranger: { y: 0.16, z: 0.2, s: 0.17 },
-  tank: { y: 0.02, z: 0.38, s: 0.27 },
-  sniper: { y: 0.2, z: 0.175, s: 0.14 },
+// Glowing head-display placement per kind (head-local: quad center + size) and the
+// per-kind display tint. One InstancedMesh quad per kind (Enemies.instanced.ts)
+// shows each enemy's AI-lab logo as a lit screen on the head unit's front face —
+// this is the robot's lab identity (the old chest emblems are gone).
+export const SCREEN_PLACEMENT: Record<
+  EnemyKind,
+  { x: number; y: number; z: number; w: number; h: number; tint: number }
+> = {
+  melee: { x: 0, y: 0, z: 0.148, w: 0.16, h: 0.26, tint: 0xff3b22 }, // narrow vertical face
+  ranger: { x: 0, y: -0.015, z: 0.138, w: 0.28, h: 0.11, tint: 0x35d4ff }, // wide visor strip
+  tank: { x: 0, y: -0.01, z: 0.178, w: 0.32, h: 0.1, tint: 0xffa728 }, // low armored slab
+  sniper: { x: -0.075, y: 0, z: 0.138, w: 0.13, h: 0.17, tint: 0x38ff7a }, // beside the scope
 }
 
 // Procedural articulated robot bodies for the 4 enemy kinds. ONE template rig is
@@ -95,29 +101,97 @@ function mergeParts(key: string, parts: Part[]): THREE.BufferGeometry {
   })
 }
 
-/** Full leg hanging from a hip pivot: hydraulic thigh + knee ball + shin + piston + foot. */
+/** Full leg hanging from a hip pivot: armored thigh + knee housing + plated shin + big boot. */
 function legGeo(key: string, L: number, t: number, side: number): THREE.BufferGeometry {
   const th = L * 0.47, sh = L * 0.47
   return mergeParts(`leg:${key}:${L}:${t}:${side}`, [
-    { g: sph(0.17 * t, 10), p: [0, 0, 0] }, // hip ball
-    { g: cyl(0.115 * t, 0.14 * t, th, 10), p: [0, -th / 2 - 0.02, 0] },
-    { g: cyl(0.05 * t, 0.05 * t, th * 0.7, 6), p: [side * 0.13 * t, -th * 0.55, 0.05 * t], r: [0.16, 0, 0] }, // piston
-    { g: sph(0.15 * t, 10), p: [0, -th - 0.03, 0.01] }, // knee
-    { g: cyl(0.09 * t, 0.115 * t, sh, 10), p: [0, -th - sh / 2 - 0.04, -0.01] },
-    { g: bevelBox(0.32 * t, 0.1, 0.52 * t, 0.02), p: [0, -L + 0.05, 0.07 * t] }, // foot
-    { g: boxG(0.1 * t, 0.06, 0.2 * t), p: [0, -L + 0.11, -0.14 * t] }, // heel greeble
+    { g: sph(0.19 * t, 10), p: [0, 0, 0] }, // hip ball
+    { g: cyl(0.15 * t, 0.17 * t, th, 10), p: [0, -th / 2 - 0.02, 0] }, // thigh core
+    { g: bevelBox(0.3 * t, th * 0.72, 0.3 * t, 0.03), p: [0, -th * 0.52, 0.04 * t] }, // thigh armor
+    { g: cyl(0.06 * t, 0.06 * t, th * 0.7, 6), p: [side * 0.18 * t, -th * 0.55, 0.1 * t], r: [0.16, 0, 0] }, // piston
+    { g: sph(0.16 * t, 10), p: [0, -th - 0.03, 0.01] }, // knee ball
+    { g: bevelBox(0.26 * t, 0.2 * t, 0.26 * t, 0.03), p: [0, -th - 0.03, 0.03 * t] }, // knee housing
+    { g: cyl(0.12 * t, 0.15 * t, sh, 10), p: [0, -th - sh / 2 - 0.04, -0.01] }, // shin core
+    { g: bevelBox(0.22 * t, sh * 0.6, 0.14 * t, 0.025), p: [0, -th - sh * 0.52, 0.08 * t] }, // shin guard
+    { g: bevelBox(0.38 * t, 0.16, 0.6 * t, 0.03), p: [0, -L + 0.08, 0.08 * t] }, // boot
+    { g: bevelBox(0.3 * t, 0.11, 0.16 * t, 0.02), p: [0, -L + 0.055, 0.38 * t] }, // toe cap
+    { g: boxG(0.16 * t, 0.1, 0.2 * t), p: [0, -L + 0.13, -0.18 * t] }, // heel block
   ])
 }
 
-/** Arm hanging from a shoulder pivot: shoulder ball + upper + elbow + forearm + hand. */
+/** Arm hanging from a shoulder pivot: deltoid housing + upper + elbow block + guarded forearm + fist. */
 function armGeo(key: string, L: number, t: number): THREE.BufferGeometry {
   return mergeParts(`arm:${key}:${L}:${t}`, [
-    { g: sph(0.15 * t, 10), p: [0, 0, 0] },
-    { g: cyl(0.09 * t, 0.11 * t, L * 0.45, 8), p: [0, -L * 0.225, 0] },
-    { g: sph(0.115 * t, 8), p: [0, -L * 0.47, 0.01] },
-    { g: cyl(0.075 * t, 0.09 * t, L * 0.42, 8), p: [0, -L * 0.68, 0] },
-    { g: bevelBox(0.15 * t, 0.2 * t, 0.16 * t, 0.02), p: [0, -L * 0.95, 0.01] },
+    { g: sph(0.17 * t, 10), p: [0, 0, 0] }, // shoulder ball
+    { g: cyl(0.17 * t, 0.14 * t, 0.16 * t, 10), p: [0, -0.02 * t, 0] }, // deltoid ring (pivot-safe)
+    { g: cyl(0.12 * t, 0.14 * t, L * 0.45, 8), p: [0, -L * 0.225, 0] }, // upper arm
+    { g: sph(0.13 * t, 8), p: [0, -L * 0.47, 0.01] }, // elbow ball
+    { g: bevelBox(0.2 * t, 0.17 * t, 0.2 * t, 0.025), p: [0, -L * 0.47, 0.01] }, // elbow housing
+    { g: cyl(0.1 * t, 0.12 * t, L * 0.42, 8), p: [0, -L * 0.68, 0] }, // forearm
+    { g: bevelBox(0.19 * t, L * 0.34, 0.22 * t, 0.025), p: [0, -L * 0.68, 0.01] }, // forearm guard
+    { g: bevelBox(0.2 * t, 0.24 * t, 0.2 * t, 0.025), p: [0, -L * 0.95, 0.01] }, // fist
   ])
+}
+
+// ─── Two-hand rifle grip toolkit (ranger + sniper) ───────────────────────────
+
+const UP_Y = new THREE.Vector3(0, 1, 0)
+const DOWN_Y = new THREE.Vector3(0, -1, 0)
+
+/** Cylinder Part running from point `a` to point `b` (merge-local space). */
+function tubePart(a: THREE.Vector3, b: THREE.Vector3, r0: number, r1: number, seg = 8): Part {
+  const d = new THREE.Vector3().subVectors(b, a)
+  const len = Math.max(0.01, d.length())
+  const e = new THREE.Euler().setFromQuaternion(
+    new THREE.Quaternion().setFromUnitVectors(UP_Y, d.normalize()),
+  )
+  return {
+    g: cyl(r0, r1, len, seg),
+    p: [(a.x + b.x) / 2, (a.y + b.y) / 2, (a.z + b.z) / 2],
+    r: [e.x, e.y, e.z],
+  }
+}
+
+/** Shoulder-to-elbow arm stub for rifle carriers (forearm + hand are baked into the rifle). */
+function upperArmGeo(key: string, L: number, t: number): THREE.BufferGeometry {
+  return mergeParts(`uarm:${key}:${L}:${t}`, [
+    { g: sph(0.17 * t, 10), p: [0, 0, 0] }, // shoulder ball
+    { g: cyl(0.17 * t, 0.14 * t, 0.16 * t, 10), p: [0, -0.02 * t, 0] }, // deltoid ring
+    { g: cyl(0.12 * t, 0.13 * t, L * 0.9, 8), p: [0, -L * 0.5, 0] }, // upper arm
+    { g: sph(0.12 * t, 8), p: [0, -L, 0] }, // elbow ball (lands in the rifle's elbow housing)
+  ])
+}
+
+/**
+ * Bake one gripping arm into a rifle, at template-build time: computes a
+ * weapon-local elbow between the arm pivot and the hand target, AIMS the arm
+ * group at it (so the shoulder-to-elbow stub stays connected), and returns
+ * forearm + elbow-housing + hand Parts to merge INTO the weapon geometry — the
+ * hold rides every per-frame weapon pitch/recoil write for free, and the elbow
+ * housing masks the seam where the static upper arm meets the pitching forearm.
+ * `weapon` and `arm` must share a parent (the torso); `weapon` may only yaw.
+ */
+function bakeGrip(
+  weapon: THREE.Group, arm: THREE.Group,
+  hand: [number, number, number], upperLen: number, t: number,
+): Part[] {
+  const yaw = weapon.rotation.y
+  const sW = new THREE.Vector3().subVectors(arm.position, weapon.position)
+    .applyAxisAngle(UP_Y, -yaw) // shoulder pivot, weapon-local
+  const hW = new THREE.Vector3(...hand)
+  const dir = new THREE.Vector3().subVectors(hW, sW)
+  dir.y -= 0.18 // elbow hangs below the straight shoulder-to-hand line
+  dir.normalize()
+  const eW = new THREE.Vector3().copy(sW).addScaledVector(dir, upperLen) // elbow, weapon-local
+  const eT = new THREE.Vector3().copy(eW).applyAxisAngle(UP_Y, yaw).add(weapon.position)
+  arm.quaternion.setFromUnitVectors(
+    DOWN_Y, new THREE.Vector3().subVectors(eT, arm.position).normalize(),
+  )
+  return [
+    tubePart(eW, hW, 0.085 * t, 0.105 * t), // forearm, elbow → hand
+    { g: bevelBox(0.2 * t, 0.17 * t, 0.2 * t, 0.02), p: [eW.x, eW.y, eW.z] }, // elbow housing
+    { g: bevelBox(0.15 * t, 0.16 * t, 0.19 * t, 0.02), p: hand }, // gripping hand
+  ]
 }
 
 // ─── Materials ───────────────────────────────────────────────────────────────
@@ -162,47 +236,57 @@ function buildTemplate(kind: EnemyKind): THREE.Group {
   const root = grp('root', 0, 0, 0, g)
 
   if (kind === 'melee') {
-    // lean chassis, one big glowing eye, power sword in the right hand
+    // athletic-heavy chassis, narrow vertical display-face head, power sword in the right hand
     const hipY = 1.06
-    const legL = grp('legL', 0.17, hipY, 0, root)
-    const legR = grp('legR', -0.17, hipY, 0, root)
-    legL.add(meshOf(legGeo('lean', hipY, 0.55, 1), dark, 'dark'))
-    legR.add(meshOf(legGeo('lean', hipY, 0.55, -1), dark, 'dark'))
-    const pelvis = meshOf(bevelBox(0.42, 0.24, 0.3, 0.04), chassis, 'chassis')
+    const legL = grp('legL', 0.2, hipY, 0, root)
+    const legR = grp('legR', -0.2, hipY, 0, root)
+    legL.add(meshOf(legGeo('lean', hipY, 0.85, 1), dark, 'dark'))
+    legR.add(meshOf(legGeo('lean', hipY, 0.85, -1), dark, 'dark'))
+    const pelvis = meshOf(mergeParts('meleePelvis:c', [
+      { g: bevelBox(0.56, 0.3, 0.4, 0.05), p: [0, 0, 0] },
+      { g: bevelBox(0.2, 0.24, 0.34, 0.03), p: [0.3, -0.02, 0] }, // hip guards
+      { g: bevelBox(0.2, 0.24, 0.34, 0.03), p: [-0.3, -0.02, 0] },
+    ]), chassis, 'chassis')
     pelvis.position.set(0, 1.14, 0)
     root.add(pelvis)
     const torso = grp('torso', 0, 1.44, 0, root)
     torso.rotation.x = 0.1
     torso.add(meshOf(mergeParts('meleeTorso:c', [
-      { g: bevelBox(0.58, 0.6, 0.34, 0.05), p: [0, 0.1, 0] },
-      { g: bevelBox(0.22, 0.13, 0.28, 0.03), p: [0.34, 0.32, 0] },
-      { g: bevelBox(0.22, 0.13, 0.28, 0.03), p: [-0.34, 0.32, 0] },
-      { g: bevelBox(0.4, 0.28, 0.08, 0.025), p: [0, 0.16, 0.19] }, // chest plate
-      { g: bevelBox(0.34, 0.22, 0.26, 0.03), p: [0, -0.26, 0] }, // abdomen
+      { g: bevelBox(0.74, 0.62, 0.42, 0.06), p: [0, 0.1, 0] }, // barrel chest
+      { g: bevelBox(0.3, 0.18, 0.36, 0.035), p: [0.42, 0.33, 0] }, // shoulder yokes
+      { g: bevelBox(0.3, 0.18, 0.36, 0.035), p: [-0.42, 0.33, 0] },
+      { g: bevelBox(0.24, 0.14, 0.3, 0.03), p: [0.44, 0.43, 0] }, // pauldron caps
+      { g: bevelBox(0.24, 0.14, 0.3, 0.03), p: [-0.44, 0.43, 0] },
+      { g: bevelBox(0.54, 0.34, 0.1, 0.03), p: [0, 0.16, 0.22] }, // chest plate
+      { g: bevelBox(0.12, 0.42, 0.34, 0.03), p: [0.4, 0.02, 0.02] }, // side armor
+      { g: bevelBox(0.12, 0.42, 0.34, 0.03), p: [-0.4, 0.02, 0.02] },
+      { g: bevelBox(0.46, 0.26, 0.34, 0.04), p: [0, -0.26, 0] }, // abdomen
     ]), chassis, 'chassis'))
     torso.add(meshOf(mergeParts('meleeTorso:d', [
-      { g: cyl(0.11, 0.13, 0.1, 10), p: [0, 0.42, 0] }, // collar
-      { g: cyl(0.13, 0.15, 0.12, 10), p: [0, -0.4, 0] }, // waist joint
-      { g: boxG(0.22, 0.028, 0.05), p: [0, -0.04, 0.21] }, // vents
-      { g: boxG(0.22, 0.028, 0.05), p: [0, -0.1, 0.21] },
-      { g: boxG(0.22, 0.028, 0.05), p: [0, -0.16, 0.21] },
-      { g: bevelBox(0.3, 0.34, 0.12, 0.03), p: [0, 0.1, -0.22] }, // backpack
-      { g: cyl(0.008, 0.008, 0.32, 5), p: [-0.12, 0.42, -0.2] }, // antenna
+      { g: cyl(0.13, 0.15, 0.12, 10), p: [0, 0.44, 0] }, // collar
+      { g: cyl(0.16, 0.18, 0.14, 10), p: [0, -0.42, 0] }, // waist joint
+      { g: boxG(0.3, 0.03, 0.05), p: [0, -0.06, 0.24] }, // vents
+      { g: boxG(0.3, 0.03, 0.05), p: [0, -0.12, 0.24] },
+      { g: boxG(0.3, 0.03, 0.05), p: [0, -0.18, 0.24] },
+      { g: bevelBox(0.4, 0.4, 0.14, 0.035), p: [0, 0.1, -0.27] }, // backpack
+      { g: cyl(0.008, 0.008, 0.32, 5), p: [-0.14, 0.46, -0.24] }, // antenna
     ]), dark, 'dark'))
-    const head = grp('head', 0, 0.55, 0.04, torso)
-    head.add(meshOf(bevelBox(0.28, 0.26, 0.3, 0.04), chassis, 'chassis'))
+    // head: narrow vertical monitor unit — front face carries the glowing logo screen
+    const head = grp('head', 0, 0.58, 0.04, torso)
+    head.add(meshOf(mergeParts('meleeHead:c', [
+      { g: bevelBox(0.26, 0.36, 0.28, 0.035), p: [0, 0, -0.02] }, // vertical casing
+      { g: bevelBox(0.3, 0.1, 0.3, 0.03), p: [0, 0.2, -0.02] }, // armored crown
+    ]), chassis, 'chassis'))
     head.add(meshOf(mergeParts('meleeHead:d', [
-      { g: cyl(0.115, 0.125, 0.08, 14), p: [0, 0, 0.14], r: [Math.PI / 2, 0, 0] }, // eye ring
-      { g: bevelBox(0.3, 0.06, 0.1, 0.02), p: [0, 0.14, 0.1] }, // brow
+      { g: bevelBox(0.21, 0.31, 0.05, 0.015), p: [0, 0, 0.115] }, // screen bezel
+      { g: bevelBox(0.06, 0.34, 0.26, 0.02), p: [0.15, 0, -0.03] }, // cheek guards
+      { g: bevelBox(0.06, 0.34, 0.26, 0.02), p: [-0.15, 0, -0.03] },
+      { g: bevelBox(0.2, 0.07, 0.1, 0.02), p: [0, -0.2, 0.06] }, // chin block
     ]), dark, 'dark', false))
-    const eye = glowMesh(cyl(0.085, 0.085, 0.03, 14), 0xff2d1a, 2.4, 'eye')
-    eye.position.set(0, 0, 0.175)
-    eye.rotation.x = Math.PI / 2
-    head.add(eye)
-    const armL = grp('armL', 0.4, 0.3, 0, torso)
-    armL.add(meshOf(armGeo('lean', 0.9, 0.6), dark, 'dark'))
-    const armR = grp('armR', -0.4, 0.3, 0, torso)
-    armR.add(meshOf(armGeo('lean', 0.9, 0.6), dark, 'dark'))
+    const armL = grp('armL', 0.52, 0.3, 0, torso)
+    armL.add(meshOf(armGeo('lean', 0.9, 0.9), dark, 'dark'))
+    const armR = grp('armR', -0.52, 0.3, 0, torso)
+    armR.add(meshOf(armGeo('lean', 0.9, 0.9), dark, 'dark'))
     // power sword held in the right hand, blade continuing down past the fist
     const weapon = grp('weapon', 0, -0.86, 0.03, armR)
     weapon.rotation.x = -0.45
@@ -218,53 +302,64 @@ function buildTemplate(kind: EnemyKind): THREE.Group {
   }
 
   if (kind === 'ranger') {
-    // twin-lens head, rifle braced two-handed, planted stance
+    // mid-weight trooper, wide twin-brow visor display, rifle braced two-handed
     const hipY = 1.02
-    const legL = grp('legL', 0.16, hipY, 0, root)
-    const legR = grp('legR', -0.16, hipY, 0, root)
-    legL.add(meshOf(legGeo('slim', hipY, 0.5, 1), dark, 'dark'))
-    legR.add(meshOf(legGeo('slim', hipY, 0.5, -1), dark, 'dark'))
+    const legL = grp('legL', 0.19, hipY, 0, root)
+    const legR = grp('legR', -0.19, hipY, 0, root)
+    legL.add(meshOf(legGeo('slim', hipY, 0.75, 1), dark, 'dark'))
+    legR.add(meshOf(legGeo('slim', hipY, 0.75, -1), dark, 'dark'))
     legL.rotation.x = 0.3 // braced: one foot forward…
     legR.rotation.x = -0.24 // …one back
     root.position.y = -0.045
-    const pelvis = meshOf(bevelBox(0.38, 0.2, 0.28, 0.035), chassis, 'chassis')
+    const pelvis = meshOf(mergeParts('rangerPelvis:c', [
+      { g: bevelBox(0.5, 0.26, 0.36, 0.04), p: [0, 0, 0] },
+      { g: bevelBox(0.18, 0.2, 0.3, 0.03), p: [0.27, -0.02, 0] }, // hip guards
+      { g: bevelBox(0.18, 0.2, 0.3, 0.03), p: [-0.27, -0.02, 0] },
+    ]), chassis, 'chassis')
     pelvis.position.set(0, 1.08, 0)
     root.add(pelvis)
     const torso = grp('torso', 0, 1.36, 0, root)
     torso.rotation.y = 0.28 // bladed stance toward target
     torso.add(meshOf(mergeParts('rangerTorso:c', [
-      { g: bevelBox(0.5, 0.55, 0.3, 0.045), p: [0, 0.08, 0] },
-      { g: bevelBox(0.36, 0.2, 0.06, 0.02), p: [0, 0.16, 0.16] },
-      { g: bevelBox(0.3, 0.18, 0.24, 0.03), p: [0, -0.24, 0] },
+      { g: bevelBox(0.64, 0.58, 0.36, 0.05), p: [0, 0.08, 0] },
+      { g: bevelBox(0.26, 0.16, 0.32, 0.03), p: [0.37, 0.3, 0] }, // shoulder yokes
+      { g: bevelBox(0.26, 0.16, 0.32, 0.03), p: [-0.37, 0.3, 0] },
+      { g: bevelBox(0.2, 0.12, 0.26, 0.025), p: [0.39, 0.4, 0] }, // pauldron caps
+      { g: bevelBox(0.2, 0.12, 0.26, 0.025), p: [-0.39, 0.4, 0] },
+      { g: bevelBox(0.46, 0.26, 0.09, 0.025), p: [0, 0.16, 0.19] }, // chest plate
+      { g: bevelBox(0.1, 0.36, 0.3, 0.025), p: [0.34, 0.04, 0.01] }, // side armor
+      { g: bevelBox(0.1, 0.36, 0.3, 0.025), p: [-0.34, 0.04, 0.01] },
+      { g: bevelBox(0.4, 0.22, 0.3, 0.035), p: [0, -0.25, 0] }, // abdomen
     ]), chassis, 'chassis'))
     torso.add(meshOf(mergeParts('rangerTorso:d', [
-      { g: cyl(0.095, 0.11, 0.09, 10), p: [0, 0.4, 0] },
-      { g: cyl(0.11, 0.13, 0.1, 10), p: [0, -0.36, 0] },
-      { g: bevelBox(0.3, 0.4, 0.14, 0.03), p: [0, 0.06, -0.2] }, // power pack
-      { g: cyl(0.008, 0.008, 0.36, 5), p: [0.1, 0.44, -0.18] },
-      { g: cyl(0.008, 0.008, 0.28, 5), p: [-0.08, 0.4, -0.18] },
-      { g: boxG(0.18, 0.026, 0.05), p: [0, -0.06, 0.19] },
-      { g: boxG(0.18, 0.026, 0.05), p: [0, -0.12, 0.19] },
+      { g: cyl(0.11, 0.13, 0.1, 10), p: [0, 0.4, 0] },
+      { g: cyl(0.13, 0.15, 0.12, 10), p: [0, -0.38, 0] },
+      { g: bevelBox(0.36, 0.42, 0.16, 0.035), p: [0, 0.06, -0.24] }, // power pack
+      { g: cyl(0.008, 0.008, 0.36, 5), p: [0.1, 0.46, -0.2] },
+      { g: cyl(0.008, 0.008, 0.28, 5), p: [-0.08, 0.42, -0.2] },
+      { g: boxG(0.24, 0.028, 0.05), p: [0, -0.06, 0.22] },
+      { g: boxG(0.24, 0.028, 0.05), p: [0, -0.12, 0.22] },
     ]), dark, 'dark'))
+    // head: wide visor unit with twin brow plates over the glowing logo strip
     const head = grp('head', 0, 0.48, 0.02, torso)
-    head.add(meshOf(bevelBox(0.26, 0.22, 0.26, 0.035), chassis, 'chassis'))
-    const visor = meshOf(bevelBox(0.24, 0.1, 0.07, 0.02), dark, 'dark', false)
-    visor.position.set(0, 0.01, 0.13)
-    head.add(visor)
-    for (const sx of [0.06, -0.06]) {
-      const lens = glowMesh(cyl(0.042, 0.042, 0.03, 10), 0x35d4ff, 2.2, 'eye')
-      lens.position.set(sx, 0.01, 0.17)
-      lens.rotation.x = Math.PI / 2
-      head.add(lens)
-    }
-    const armL = grp('armL', 0.36, 0.26, 0, torso)
-    armL.add(meshOf(armGeo('slim', 0.85, 0.55), dark, 'dark'))
-    armL.rotation.set(-1.3, 0.55, 0)
-    const armR = grp('armR', -0.36, 0.26, 0, torso)
-    armR.add(meshOf(armGeo('slim', 0.85, 0.55), dark, 'dark'))
-    armR.rotation.set(-1.15, -0.2, 0)
-    // rifle held across the chest; counter-rotated so the barrel faces the target
-    const weapon = grp('weapon', 0.04, 0.02, 0.3, torso)
+    head.add(meshOf(mergeParts('rangerHead:c', [
+      { g: bevelBox(0.36, 0.22, 0.26, 0.03), p: [0, 0, -0.01] }, // wide visor casing
+      { g: bevelBox(0.4, 0.08, 0.28, 0.025), p: [0, 0.13, -0.01] }, // crown plate
+    ]), chassis, 'chassis'))
+    head.add(meshOf(mergeParts('rangerHead:d', [
+      { g: bevelBox(0.33, 0.145, 0.05, 0.015), p: [0, -0.015, 0.105] }, // screen bezel
+      { g: bevelBox(0.16, 0.05, 0.08, 0.015), p: [0.09, 0.085, 0.1], r: [0, 0, -0.12] }, // twin brows
+      { g: bevelBox(0.16, 0.05, 0.08, 0.015), p: [-0.09, 0.085, 0.1], r: [0, 0, 0.12] },
+      { g: bevelBox(0.08, 0.2, 0.24, 0.02), p: [0.2, 0, -0.02] }, // ear armor
+      { g: bevelBox(0.08, 0.2, 0.24, 0.02), p: [-0.2, 0, -0.02] },
+    ]), dark, 'dark', false))
+    const armL = grp('armL', 0.44, 0.26, 0, torso)
+    const armR = grp('armR', -0.44, 0.26, 0, torso)
+    // rifle shouldered against the left yoke, clear of the deeper chest; the
+    // counter-yaw keeps the barrel tracking the target. bakeGrip aims both arm
+    // groups and bakes the gripping forearms + hands into the rifle merge so the
+    // hold survives poseRanger's per-frame pitch/recoil writes.
+    const weapon = grp('weapon', 0.14, 0.12, 0.5, torso)
     weapon.rotation.y = -0.28
     weapon.add(meshOf(mergeParts('rangerRifle:d', [
       { g: bevelBox(0.07, 0.12, 0.52, 0.02), p: [0, 0, 0.05] }, // receiver
@@ -272,7 +367,11 @@ function buildTemplate(kind: EnemyKind): THREE.Group {
       { g: boxG(0.05, 0.09, 0.2), p: [0, -0.01, -0.28] }, // stock
       { g: boxG(0.05, 0.13, 0.07), p: [0, -0.12, 0.02] }, // mag
       { g: boxG(0.04, 0.06, 0.04), p: [0, 0.09, 0.1] }, // sight
+      ...bakeGrip(weapon, armR, [0, -0.11, 0], 0.42, 0.8), // trigger hand
+      ...bakeGrip(weapon, armL, [0, -0.05, 0.2], 0.42, 0.8), // foregrip hand
     ]), dark, 'dark'))
+    armL.add(meshOf(upperArmGeo('slim', 0.42, 0.8), dark, 'dark'))
+    armR.add(meshOf(upperArmGeo('slim', 0.42, 0.8), dark, 'dark'))
     const muzzleGlow = glowMesh(cyl(0.032, 0.032, 0.05, 8), 0x66d8ff, 1.4, 'muzzle')
     muzzleGlow.position.set(0, 0.025, 0.74)
     muzzleGlow.rotation.x = Math.PI / 2
@@ -284,45 +383,59 @@ function buildTemplate(kind: EnemyKind): THREE.Group {
   }
 
   if (kind === 'tank') {
-    // heavy squat frame behind a massive riveted riot shield
+    // genuinely massive squat frame behind a riveted riot shield
     const hipY = 0.88
-    const legL = grp('legL', 0.26, hipY, 0, root)
-    const legR = grp('legR', -0.26, hipY, 0, root)
-    legL.add(meshOf(legGeo('heavy', hipY, 1.0, 1), dark, 'dark'))
-    legR.add(meshOf(legGeo('heavy', hipY, 1.0, -1), dark, 'dark'))
+    const legL = grp('legL', 0.32, hipY, 0, root)
+    const legR = grp('legR', -0.32, hipY, 0, root)
+    legL.add(meshOf(legGeo('heavy', hipY, 1.35, 1), dark, 'dark'))
+    legR.add(meshOf(legGeo('heavy', hipY, 1.35, -1), dark, 'dark'))
     for (const [lg, sx] of [[legL, 1], [legR, -1]] as const) {
-      const plate = meshOf(bevelBox(0.2, 0.32, 0.2, 0.03), chassis, 'chassis')
-      plate.position.set(sx * 0.02, -0.22, 0.1)
+      const plate = meshOf(bevelBox(0.3, 0.4, 0.26, 0.035), chassis, 'chassis')
+      plate.position.set(sx * 0.02, -0.24, 0.16)
       lg.add(plate)
     }
-    const pelvis = meshOf(bevelBox(0.62, 0.26, 0.44, 0.05), chassis, 'chassis')
+    const pelvis = meshOf(mergeParts('tankPelvis:c', [
+      { g: bevelBox(0.84, 0.32, 0.54, 0.06), p: [0, 0, 0] },
+      { g: bevelBox(0.26, 0.28, 0.46, 0.04), p: [0.44, -0.04, 0] }, // hip guards
+      { g: bevelBox(0.26, 0.28, 0.46, 0.04), p: [-0.44, -0.04, 0] },
+    ]), chassis, 'chassis')
     pelvis.position.set(0, 0.97, 0)
     root.add(pelvis)
     const torso = grp('torso', 0, 1.42, 0, root)
     torso.add(meshOf(mergeParts('tankTorso:c', [
-      { g: bevelBox(0.95, 0.7, 0.6, 0.07), p: [0, 0.05, 0] },
-      { g: bevelBox(0.3, 0.24, 0.42, 0.04), p: [0.55, 0.16, 0] },
-      { g: bevelBox(0.3, 0.24, 0.42, 0.04), p: [-0.55, 0.16, 0] },
-      { g: bevelBox(0.6, 0.4, 0.1, 0.03), p: [0, 0.02, 0.32] },
+      { g: bevelBox(1.15, 0.76, 0.68, 0.08), p: [0, 0.05, 0] },
+      { g: bevelBox(0.4, 0.3, 0.5, 0.05), p: [0.66, 0.18, 0] }, // shoulder blocks
+      { g: bevelBox(0.4, 0.3, 0.5, 0.05), p: [-0.66, 0.18, 0] },
+      { g: bevelBox(0.34, 0.16, 0.44, 0.04), p: [0.68, 0.38, 0] }, // pauldron caps
+      { g: bevelBox(0.34, 0.16, 0.44, 0.04), p: [-0.68, 0.38, 0] },
+      { g: bevelBox(0.72, 0.46, 0.12, 0.04), p: [0, 0.04, 0.36] }, // front plate
+      { g: bevelBox(0.16, 0.5, 0.56, 0.04), p: [0.58, -0.02, 0] }, // side armor
+      { g: bevelBox(0.16, 0.5, 0.56, 0.04), p: [-0.58, -0.02, 0] },
     ]), chassis, 'chassis'))
     torso.add(meshOf(mergeParts('tankTorso:d', [
-      { g: cyl(0.05, 0.06, 0.32, 8), p: [0.3, 0.52, -0.18] }, // exhaust stacks
-      { g: cyl(0.05, 0.06, 0.26, 8), p: [-0.3, 0.49, -0.18] },
-      { g: boxG(0.5, 0.03, 0.06), p: [0, -0.2, 0.34] },
-      { g: boxG(0.5, 0.03, 0.06), p: [0, -0.27, 0.34] },
-      { g: cyl(0.16, 0.19, 0.14, 12), p: [0, -0.42, 0] },
-      { g: bevelBox(0.5, 0.42, 0.16, 0.04), p: [0, 0.05, -0.36] }, // engine block
+      { g: cyl(0.06, 0.07, 0.34, 8), p: [0.36, 0.56, -0.2] }, // exhaust stacks
+      { g: cyl(0.06, 0.07, 0.28, 8), p: [-0.36, 0.53, -0.2] },
+      { g: boxG(0.6, 0.035, 0.06), p: [0, -0.22, 0.4] },
+      { g: boxG(0.6, 0.035, 0.06), p: [0, -0.29, 0.4] },
+      { g: cyl(0.2, 0.24, 0.16, 12), p: [0, -0.45, 0] },
+      { g: bevelBox(0.6, 0.48, 0.18, 0.045), p: [0, 0.05, -0.42] }, // engine block
     ]), dark, 'dark'))
-    const head = grp('head', 0, 0.5, 0.12, torso)
-    head.add(meshOf(bevelBox(0.32, 0.2, 0.3, 0.04), chassis, 'chassis'))
-    const visor = glowMesh(boxG(0.2, 0.035, 0.03), 0xffa728, 2.0, 'eye')
-    visor.position.set(0, 0, 0.16)
-    head.add(visor)
-    const armL = grp('armL', 0.66, 0.26, 0.1, torso)
-    armL.add(meshOf(armGeo('heavy', 0.85, 1.05), dark, 'dark'))
+    // head: low armored slab display peeking over the shield rim
+    const head = grp('head', 0, 0.62, 0.14, torso)
+    head.add(meshOf(mergeParts('tankHead:c', [
+      { g: bevelBox(0.44, 0.2, 0.34, 0.035), p: [0, 0, -0.02] }, // low slab casing
+      { g: bevelBox(0.5, 0.08, 0.4, 0.03), p: [0, 0.12, -0.03] }, // armored cowl overhang
+    ]), chassis, 'chassis'))
+    head.add(meshOf(mergeParts('tankHead:d', [
+      { g: bevelBox(0.37, 0.13, 0.05, 0.015), p: [0, -0.01, 0.145] }, // screen bezel
+      { g: bevelBox(0.1, 0.16, 0.3, 0.02), p: [0.24, 0, -0.03] }, // side cheeks
+      { g: bevelBox(0.1, 0.16, 0.3, 0.02), p: [-0.24, 0, -0.03] },
+    ]), dark, 'dark', false))
+    const armL = grp('armL', 0.78, 0.26, 0.1, torso)
+    armL.add(meshOf(armGeo('heavy', 0.85, 1.3), dark, 'dark'))
     armL.rotation.set(-1.15, 0.35, 0)
-    const armR = grp('armR', -0.66, 0.26, 0.1, torso)
-    armR.add(meshOf(armGeo('heavy', 0.85, 1.05), dark, 'dark'))
+    const armR = grp('armR', -0.78, 0.26, 0.1, torso)
+    armR.add(meshOf(armGeo('heavy', 0.85, 1.3), dark, 'dark'))
     armR.rotation.set(-1.15, -0.35, 0)
     // the shield: thick beveled plate, edge frame, rivet studs, glowing view slit
     const shield = grp('shield', 0, 1.08, 0.58, root)
@@ -353,54 +466,62 @@ function buildTemplate(kind: EnemyKind): THREE.Group {
   }
 
   if (kind === 'sniper') {
-    // slim frame, oversized scope-lens over one eye, very long rifle
+    // leanest frame but still armored; big green scope-lens beside a compact display unit
     const hipY = 1.04
-    const legL = grp('legL', 0.15, hipY, 0, root)
-    const legR = grp('legR', -0.15, hipY, 0, root)
-    legL.add(meshOf(legGeo('slim', hipY, 0.48, 1), dark, 'dark'))
-    legR.add(meshOf(legGeo('slim', hipY, 0.48, -1), dark, 'dark'))
+    const legL = grp('legL', 0.18, hipY, 0, root)
+    const legR = grp('legR', -0.18, hipY, 0, root)
+    legL.add(meshOf(legGeo('slim', hipY, 0.7, 1), dark, 'dark'))
+    legR.add(meshOf(legGeo('slim', hipY, 0.7, -1), dark, 'dark'))
     legL.rotation.x = 0.24
     legR.rotation.x = -0.2
     root.position.y = -0.03
-    const pelvis = meshOf(bevelBox(0.36, 0.18, 0.26, 0.03), chassis, 'chassis')
+    const pelvis = meshOf(mergeParts('sniperPelvis:c', [
+      { g: bevelBox(0.46, 0.24, 0.32, 0.035), p: [0, 0, 0] },
+      { g: bevelBox(0.16, 0.18, 0.26, 0.025), p: [0.25, -0.02, 0] }, // hip guards
+      { g: bevelBox(0.16, 0.18, 0.26, 0.025), p: [-0.25, -0.02, 0] },
+    ]), chassis, 'chassis')
     pelvis.position.set(0, 1.1, 0)
     root.add(pelvis)
     const torso = grp('torso', 0, 1.4, 0, root)
     torso.rotation.y = 0.35
     torso.add(meshOf(mergeParts('sniperTorso:c', [
-      { g: bevelBox(0.44, 0.58, 0.26, 0.04), p: [0, 0.08, 0] },
-      { g: bevelBox(0.3, 0.16, 0.05, 0.02), p: [0, 0.2, 0.14] },
-      { g: bevelBox(0.28, 0.16, 0.22, 0.03), p: [0, -0.26, 0] },
+      { g: bevelBox(0.56, 0.6, 0.32, 0.045), p: [0, 0.08, 0] },
+      { g: bevelBox(0.22, 0.14, 0.28, 0.028), p: [0.33, 0.31, 0] }, // shoulder yokes
+      { g: bevelBox(0.22, 0.14, 0.28, 0.028), p: [-0.33, 0.31, 0] },
+      { g: bevelBox(0.4, 0.22, 0.08, 0.022), p: [0, 0.2, 0.17] }, // chest plate
+      { g: bevelBox(0.09, 0.32, 0.26, 0.022), p: [0.3, 0.04, 0.01] }, // side armor
+      { g: bevelBox(0.09, 0.32, 0.26, 0.022), p: [-0.3, 0.04, 0.01] },
+      { g: bevelBox(0.36, 0.2, 0.26, 0.03), p: [0, -0.26, 0] }, // abdomen
     ]), chassis, 'chassis'))
     torso.add(meshOf(mergeParts('sniperTorso:d', [
-      { g: cyl(0.085, 0.1, 0.09, 10), p: [0, 0.42, 0] },
-      { g: cyl(0.1, 0.12, 0.1, 10), p: [0, -0.36, 0] },
-      { g: bevelBox(0.26, 0.36, 0.12, 0.025), p: [0, 0.04, -0.17] },
-      { g: cyl(0.007, 0.007, 0.44, 5), p: [-0.09, 0.5, -0.15] }, // tall antenna
-      { g: sph(0.02, 6), p: [-0.09, 0.72, -0.15] },
-      { g: boxG(0.16, 0.024, 0.05), p: [0, -0.08, 0.17] },
+      { g: cyl(0.1, 0.12, 0.1, 10), p: [0, 0.42, 0] },
+      { g: cyl(0.12, 0.14, 0.11, 10), p: [0, -0.38, 0] },
+      { g: bevelBox(0.3, 0.4, 0.14, 0.03), p: [0, 0.04, -0.2] }, // power pack
+      { g: cyl(0.007, 0.007, 0.44, 5), p: [-0.1, 0.52, -0.18] }, // tall antenna
+      { g: sph(0.02, 6), p: [-0.1, 0.74, -0.18] },
+      { g: boxG(0.2, 0.026, 0.05), p: [0, -0.08, 0.2] },
     ]), dark, 'dark'))
+    // head: compact display unit; the big scope lens rides beside it (kept, now green)
     const head = grp('head', 0, 0.48, 0.02, torso)
-    head.add(meshOf(bevelBox(0.26, 0.24, 0.26, 0.035), chassis, 'chassis'))
+    head.add(meshOf(mergeParts('sniperHead:c', [
+      { g: bevelBox(0.34, 0.26, 0.26, 0.035), p: [0, 0, -0.01] }, // casing
+      { g: bevelBox(0.38, 0.08, 0.28, 0.025), p: [0, 0.15, -0.01] }, // crown plate
+    ]), chassis, 'chassis'))
     head.add(meshOf(mergeParts('sniperHead:d', [
-      { g: cyl(0.105, 0.12, 0.16, 14), p: [0.07, 0.01, 0.12], r: [Math.PI / 2, 0, 0] }, // scope housing
-      { g: bevelBox(0.08, 0.05, 0.1, 0.015), p: [0.16, 0.1, 0.06] }, // housing bracket
+      { g: bevelBox(0.17, 0.21, 0.05, 0.015), p: [-0.075, 0, 0.105] }, // screen bezel
+      { g: cyl(0.115, 0.13, 0.18, 14), p: [0.085, 0.01, 0.13], r: [Math.PI / 2, 0, 0] }, // scope housing
+      { g: bevelBox(0.09, 0.05, 0.1, 0.015), p: [0.17, 0.12, 0.06] }, // housing bracket
     ]), dark, 'dark', false))
-    const lens = glowMesh(cyl(0.08, 0.08, 0.03, 14), 0xff3050, 1.6, 'lens')
-    lens.position.set(0.07, 0.01, 0.21)
+    const lens = glowMesh(cyl(0.085, 0.085, 0.03, 14), 0x38ff7a, 1.6, 'lens')
+    lens.position.set(0.085, 0.01, 0.23)
     lens.rotation.x = Math.PI / 2
     head.add(lens)
-    const eyeS = glowMesh(cyl(0.026, 0.026, 0.025, 8), 0xff3050, 1.4, 'eye')
-    eyeS.position.set(-0.07, 0.01, 0.14)
-    eyeS.rotation.x = Math.PI / 2
-    head.add(eyeS)
-    const armL = grp('armL', 0.32, 0.26, 0, torso)
-    armL.add(meshOf(armGeo('sniper', 0.85, 0.5), dark, 'dark'))
-    armL.rotation.set(-1.45, 0.5, 0)
-    const armR = grp('armR', -0.32, 0.26, 0, torso)
-    armR.add(meshOf(armGeo('sniper', 0.85, 0.5), dark, 'dark'))
-    armR.rotation.set(-1.05, -0.25, 0)
-    const weapon = grp('weapon', 0.05, 0.12, 0.24, torso)
+    const armL = grp('armL', 0.4, 0.26, 0, torso)
+    const armR = grp('armR', -0.4, 0.26, 0, torso)
+    // long rifle raised to the cheek, stock butted on the shoulder yoke; gripping
+    // forearms + hands are baked into the rifle merge (see bakeGrip) so the hold
+    // survives poseSniper's per-frame aim-pitch and recoil writes.
+    const weapon = grp('weapon', 0.15, 0.26, 0.53, torso)
     weapon.rotation.y = -0.35 // counter the bladed torso so the barrel tracks the target
     weapon.add(meshOf(mergeParts('sniperRifle:d', [
       { g: bevelBox(0.06, 0.1, 0.55, 0.018), p: [0, 0, 0] }, // receiver
@@ -410,8 +531,12 @@ function buildTemplate(kind: EnemyKind): THREE.Group {
       { g: cyl(0.04, 0.04, 0.26, 10), p: [0, 0.12, -0.04], r: [Math.PI / 2, 0, 0] }, // top scope
       { g: boxG(0.05, 0.1, 0.2), p: [0, -0.02, -0.36] }, // stock
       { g: boxG(0.045, 0.12, 0.06), p: [0, -0.1, 0.02] }, // grip
+      ...bakeGrip(weapon, armR, [0, -0.09, 0.02], 0.4, 0.72), // trigger hand
+      ...bakeGrip(weapon, armL, [0, -0.02, 0.24], 0.4, 0.72), // foregrip hand under the shroud
     ]), dark, 'dark'))
-    const muzzleGlow = glowMesh(cyl(0.028, 0.028, 0.04, 8), 0xff5060, 1.3, 'muzzle')
+    armL.add(meshOf(upperArmGeo('sniper', 0.4, 0.72), dark, 'dark'))
+    armR.add(meshOf(upperArmGeo('sniper', 0.4, 0.72), dark, 'dark'))
+    const muzzleGlow = glowMesh(cyl(0.028, 0.028, 0.04, 8), 0x4dff8f, 1.3, 'muzzle')
     muzzleGlow.position.set(0, 0.03, 1.22)
     muzzleGlow.rotation.x = Math.PI / 2
     weapon.add(muzzleGlow)

@@ -344,23 +344,67 @@ class AudioEngine {
 
   // ─── Public one-shots (each drops silently until the context exists) ───────
 
-  /** Punchy layered gunshot: highpassed noise crack + 140Hz thump + click transient. */
+  /**
+   * Magnum revolver report: hammer-strike click transient, heavy high-passed
+   * noise crack, deep ~90Hz thump with a long decay, subtle pink room tail.
+   * Thump/tail decay to ~0.7% of peak by the next full-auto shot (0.26s), so
+   * overlapping tails stay well under the limiter.
+   */
   shot(): void {
     if (!this.live()) return
+    const t0 = this.now()
+    // hammer strike (tiny mechanical transient right at t0)
+    this.burst({ t0, dur: 0.012, gain: 0.3, filter: { type: 'bandpass', from: 3400, q: 1.4 } })
+    this.tone({ t0, type: 'square', from: 1600, dur: 0.018, gain: 0.1, lowpass: 5200 })
+    // big high-passed crack
     this.burst({
-      dur: 0.09, gain: 0.42, rate: 0.9 + Math.random() * 0.25,
-      filter: { type: 'highpass', from: 950, q: 0.8 },
+      t0, dur: 0.14, gain: 0.5, rate: 0.85 + Math.random() * 0.25,
+      filter: { type: 'highpass', from: 720, q: 0.7 },
     })
-    this.tone({ type: 'sine', from: 140, to: 62, sweepT: 0.1, dur: 0.13, gain: 0.5 })
-    this.burst({ dur: 0.014, gain: 0.34, filter: { type: 'bandpass', from: 3200, q: 1.3 } })
+    // deep magnum thump — lower and longer than the old pistol body
+    this.tone({ t0, type: 'sine', from: 94, to: 46, sweepT: 0.16, dur: 0.34, gain: 0.52 })
+    // subtle room tail
+    this.burst({
+      t0: t0 + 0.03, dur: 0.38, gain: 0.11, attack: 0.03, pink: true,
+      filter: { type: 'lowpass', from: 1400, to: 380, sweepT: 0.3 },
+    })
   }
 
-  /** Two scheduled mechanical clicks: mag out now, mag in at reload end. */
+  /**
+   * Revolver reload scheduled proportionally across `duration`: cylinder
+   * swing-out clunk, ejector flick + six brass-tinkle ticks, speedloader
+   * insert thunk, firm snap-shut clack just before the weapon is ready.
+   */
   reload(duration: number): void {
     if (!this.live()) return
     const t0 = this.now()
-    this.mechClick(t0, 1, 0.2)
-    this.mechClick(t0 + Math.max(0.15, duration - 0.04), 1.3, 0.24)
+    const d = Math.max(0.4, duration)
+    // cylinder swing-out clunk near the start
+    const tOut = t0 + 0.06 * d
+    this.tone({ t0: tOut, type: 'sine', from: 210, to: 120, sweepT: 0.07, dur: 0.1, gain: 0.2 })
+    this.burst({ t0: tOut, dur: 0.06, gain: 0.16, filter: { type: 'lowpass', from: 900 } })
+    this.mechClick(tOut, 0.75, 0.1)
+    // ejector-rod flick
+    this.burst({
+      t0: t0 + 0.24 * d, dur: 0.05, gain: 0.13,
+      filter: { type: 'bandpass', from: 1700, to: 3400, sweepT: 0.045, q: 1.6 },
+    })
+    // six spent casings tinkling out (short bright blips, randomized pitch)
+    for (let i = 0; i < 6; i++) {
+      const tt = t0 + d * (0.3 + i * 0.062) + (Math.random() - 0.5) * 0.02 * d
+      const p = 1 + (Math.random() - 0.5) * 0.35
+      this.tone({ t0: tt, type: 'triangle', from: 2500 * p, dur: 0.04, gain: 0.055, attack: 0.001 })
+      this.burst({ t0: tt, dur: 0.022, gain: 0.05, filter: { type: 'bandpass', from: 4200 * p, q: 3 } })
+    }
+    // speedloader insert thunk
+    const tIn = t0 + 0.72 * d
+    this.tone({ t0: tIn, type: 'sine', from: 150, to: 92, sweepT: 0.08, dur: 0.11, gain: 0.24 })
+    this.burst({ t0: tIn, dur: 0.07, gain: 0.15, filter: { type: 'lowpass', from: 700 } })
+    // cylinder snap-shut clack just before the end
+    const tSnap = t0 + 0.9 * d
+    this.mechClick(tSnap, 1.3, 0.26)
+    this.tone({ t0: tSnap, type: 'sine', from: 190, to: 115, sweepT: 0.05, dur: 0.08, gain: 0.2 })
+    this.burst({ t0: tSnap, dur: 0.04, gain: 0.12, filter: { type: 'bandpass', from: 2600, q: 1.2 } })
   }
 
   /** Filtered-noise whoosh; pitch + intensity scale with charge (0..1). */

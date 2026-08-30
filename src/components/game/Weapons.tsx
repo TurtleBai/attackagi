@@ -29,6 +29,7 @@ const MOLO_AIM_ROT = new THREE.Euler(-0.5, 0.08, 0.3)
 
 const STRIKE_AT = 0.42 // fraction of the swing when bat damage lands
 const THROW_ANIM = 0.42 // seconds
+const CYL_STEP = (Math.PI * 2) / 6 // one revolver chamber
 
 // ─── Scratch (no per-frame allocations) ──────────────────────────────────────
 
@@ -65,6 +66,7 @@ interface LocalState {
   throwT: number // -1 idle, else seconds into throw anim
   flashT: number
   recoil: number
+  cylAngle: number // revolver cylinder visual angle (rad, accumulates forward)
   swayX: number
   swayY: number
   lastYaw: number
@@ -91,6 +93,7 @@ export function Weapons() {
     throwT: -1,
     flashT: 0,
     recoil: 0,
+    cylAngle: 0,
     swayX: 0, swayY: 0, lastYaw: 0, lastPitch: 0,
     bobPhase: 0, bobAmt: 0,
     raiseT: 1,
@@ -108,6 +111,7 @@ export function Weapons() {
     st.aiming = false
     st.throwT = -1
     st.flashT = 0; st.recoil = 0
+    st.cylAngle = 0
     st.swayX = 0; st.swayY = 0
     st.bobPhase = 0; st.bobAmt = 0
     st.raiseT = 1
@@ -162,6 +166,8 @@ export function Weapons() {
     st.flashT = 0.055
     rig.pistol.flash.rotation.z = Math.random() * Math.PI * 2
     rig.pistol.flash.scale.setScalar(0.85 + Math.random() * 0.4)
+    rig.pistol.ventFlash.rotation.z = (Math.random() - 0.5) * 0.7
+    rig.pistol.ventFlash.scale.setScalar(0.8 + Math.random() * 0.45)
     if (magAfter <= 0 && s.ammoReserve > 0) startReload() // auto on empty
   }
 
@@ -504,24 +510,65 @@ export function Weapons() {
     if (st.aiming && s.weapon === 3 && running && locked) updateArc(s.stats.molotovRadius)
     else if (arc.group.visible) arc.group.visible = false
 
-    // ── pistol animation ──
+    // ── revolver animation ──
     if (rig.pistol.group.visible) {
-      let dip = 0
-      let rack = 0
-      if (st.reloadActive) {
-        const p = THREE.MathUtils.clamp(1 - (st.reloadEnd - world.time) / st.reloadDur, 0, 1)
-        dip = Math.sin(p * Math.PI)
-        rack = THREE.MathUtils.smoothstep(p, 0.55, 0.64) * (1 - THREE.MathUtils.smoothstep(p, 0.74, 0.84))
-      }
-      st.recoil *= Math.exp(-10 * step)
+      // reload timeline — every pose below derives from progress p, never from
+      // accumulated state, so a weapon switch mid-reload snaps back clean
+      const p = st.reloadActive
+        ? THREE.MathUtils.clamp(1 - (st.reloadEnd - world.time) / st.reloadDur, 0, 1)
+        : 0
+      const dip = st.reloadActive ? Math.sin(p * Math.PI) : 0 // tilt down-left arc
+      const open = st.reloadActive // crane swings out, holds, snaps shut in the last ~0.15s
+        ? THREE.MathUtils.smoothstep(p, 0.08, 0.26) * (1 - THREE.MathUtils.smoothstep(p, 0.84, 0.93))
+        : 0
+      const eject = st.reloadActive // ejector-rod flick around mid-reload
+        ? THREE.MathUtils.smoothstep(p, 0.36, 0.44) * (1 - THREE.MathUtils.smoothstep(p, 0.5, 0.62))
+        : 0
+      const flick = st.reloadActive // small wrist snap as the cylinder shuts
+        ? THREE.MathUtils.smoothstep(p, 0.86, 0.92) * (1 - THREE.MathUtils.smoothstep(p, 0.93, 0.995))
+        : 0
+
+      st.recoil *= Math.exp(-9 * step)
       const g = rig.pistol.group
-      g.position.set(PISTOL_POS.x, PISTOL_POS.y - dip * 0.14, PISTOL_POS.z + st.recoil * 0.05)
-      g.rotation.set(-dip * 0.85 + st.recoil * 0.12, 0.02, dip * 0.4)
-      rig.pistol.slide.position.z = st.recoil * 0.03 + rack * 0.024
+      g.position.set(
+        PISTOL_POS.x - dip * 0.055,
+        PISTOL_POS.y - dip * 0.15 + st.recoil * 0.012,
+        PISTOL_POS.z + st.recoil * 0.085 + dip * 0.035,
+      )
+      g.rotation.set(
+        -dip * 0.78 + st.recoil * 0.28 + flick * 0.1, // magnum muzzle rise
+        0.02 + dip * 0.1,
+        dip * 0.55 + open * 0.26 - flick * 0.16 - st.recoil * 0.05, // roll cylinder-side down
+      )
+
+      rig.pistol.crane.rotation.z = open * 2.05
+      rig.pistol.ejector.position.z = eject * 0.022
+
+      // cylinder: free spin while swung out, else index one chamber per round fired
+      if (st.reloadActive) {
+        st.cylAngle += step * open * (7 + 30 * eject)
+      } else {
+        const tgt = Math.max(0, s.stats.magSize - s.ammoInMag) * CYL_STEP
+        const off = st.cylAngle - tgt
+        if (off > CYL_STEP * 0.5 || off < -CYL_STEP * 1.5) {
+          // chambers are 6-fold symmetric — wrap to within one chamber below the
+          // target so post-reload (and any hard jump) clicks forward, never rewinds
+          st.cylAngle = tgt + ((off % CYL_STEP) + CYL_STEP) % CYL_STEP - CYL_STEP
+        }
+        st.cylAngle += (tgt - st.cylAngle) * (1 - Math.exp(-25 * step))
+      }
+      rig.pistol.cylinder.rotation.z = st.cylAngle
+
+      // hammer: snaps back with the recoil spike, drops as it decays (next
+      // shot re-spikes recoil, so the drop lands right before the bang)
+      rig.pistol.hammer.rotation.x = THREE.MathUtils.smoothstep(st.recoil, 0.15, 0.5) * 0.55
 
       st.flashT = Math.max(0, st.flashT - step)
       const flashOn = st.flashT > 0
-      if (rig.pistol.flash.visible !== flashOn) rig.pistol.flash.visible = flashOn
+      if (rig.pistol.flash.visible !== flashOn) {
+        rig.pistol.flash.visible = flashOn
+        rig.pistol.ventFlash.visible = flashOn
+      }
       if (flashOn) rig.pistol.flashMat.opacity = Math.min(1, st.flashT / 0.04)
     }
 

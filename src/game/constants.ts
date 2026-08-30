@@ -27,12 +27,12 @@ export const DODGE_TIME = 0.22
 export const DODGE_IFRAMES = 0.38
 export const DODGE_COOLDOWN = 2.0
 
-// ─── Pistol ──────────────────────────────────────────────────────────────────
-export const PISTOL_DAMAGE = 12
-export const PISTOL_MAG = 8
-export const PISTOL_RESERVE_START = 40
-export const PISTOL_FIRE_INTERVAL = 0.16 // min seconds between shots
-export const PISTOL_RELOAD = 1.1
+// ─── Revolver (slot 1 sidearm) ───────────────────────────────────────────────
+export const PISTOL_DAMAGE = 20
+export const PISTOL_MAG = 6 // cylinder
+export const PISTOL_RESERVE_START = 90
+export const PISTOL_FIRE_INTERVAL = 0.26 // min seconds between shots (full-auto while held)
+export const PISTOL_RELOAD = 1.5 // swing out, eject, speedload, snap shut
 export const PISTOL_RANGE = 120
 
 // ─── Baseball bat ────────────────────────────────────────────────────────────

@@ -4,7 +4,8 @@ import { MAX_CONCURRENT_ENEMIES } from '@/game/constants'
 import { chassisMaterial, darkMetalMaterial } from '@/game/gfx/materials'
 import type { Enemy, EnemyKind } from '@/game/types'
 import {
-  DECAL_PLACEMENT, getKindRig, KIND_TINT, outlineMaterials, unitBoxGeometry, type KindRig,
+  getKindRig, KIND_TINT, outlineMaterials, SCREEN_PLACEMENT, unitBoxGeometry,
+  type KindRig,
 } from './Enemies.bodies'
 import { ATLAS_GRID, logoAtlasTexture, logoCellOffset, LOGO_COUNT } from './Enemies.decals'
 
@@ -70,42 +71,66 @@ function glowInstMaterial(src: THREE.MeshStandardMaterial): THREE.MeshStandardMa
   return m
 }
 
-/** Lab-emblem decal: atlas cell selected per instance via a UV offset. */
-function decalMaterial(): THREE.MeshStandardMaterial {
-  const atlas = logoAtlasTexture()
-  const m = new THREE.MeshStandardMaterial({
-    map: atlas,
-    emissiveMap: atlas,
-    emissive: new THREE.Color(0xb8c2d6),
-    emissiveIntensity: 0.3, // stays readable in low light without neon-ing
-    color: 0xd8dce4,
-    transparent: true,
-    depthWrite: false,
-    roughness: 0.85,
-    metalness: 0.1,
+/** Head display screen: lab logo from the shared atlas over a faint dark screen
+ * fill, HDR output (~2) so Bloom halos it. Scanline + idle flicker are built from
+ * clamped sums/products only — no pow anywhere (GLSL pow with base <= 0 is a hard
+ * NaN rule on this project). */
+function screenMaterial(tint: number): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    uniforms: {
+      uAtlas: { value: logoAtlasTexture() },
+      uTint: { value: new THREE.Color(tint) },
+      uTime: { value: 0 },
+    },
+    vertexShader: /* glsl */ `
+attribute vec2 aCell;
+attribute float aGlow;
+varying vec2 vUv;
+varying float vGlow;
+varying float vSeed;
+void main(){
+  vUv = uv + aCell;
+  vGlow = aGlow;
+  vSeed = aCell.x * 21.0 + aCell.y * 47.0;
+  vec4 mp = vec4(position, 1.0);
+  #ifdef USE_INSTANCING
+    mp = instanceMatrix * mp;
+  #endif
+  gl_Position = projectionMatrix * modelViewMatrix * mp;
+}`,
+    fragmentShader: /* glsl */ `
+uniform sampler2D uAtlas;
+uniform vec3 uTint;
+uniform float uTime;
+varying vec2 vUv;
+varying float vGlow;
+varying float vSeed;
+void main(){
+  float mark = texture2D(uAtlas, vUv).a;
+  float scan = 0.92 + 0.08 * sin(vUv.y * 620.0 - uTime * 3.0);
+  float flick = 0.94 + 0.06 * sin(uTime * 9.0 + vSeed) * sin(uTime * 23.0 + vSeed * 1.7);
+  float g = max(vGlow, 0.0) * scan * flick;
+  vec3 col = uTint * (0.12 + 2.0 * mark) * g;
+  gl_FragColor = vec4(col, 1.0);
+}`,
   })
-  m.onBeforeCompile = (shader) => {
-    shader.vertexShader = shader.vertexShader
-      .replace('#include <common>', '#include <common>\nattribute vec2 aCell;')
-      .replace(
-        '#include <uv_vertex>',
-        `#include <uv_vertex>
-#ifdef USE_MAP
-	vMapUv += aCell;
-#endif
-#ifdef USE_EMISSIVEMAP
-	vEmissiveMapUv += aCell;
-#endif`,
-      )
-  }
-  m.customProgramCacheKey = () => 'enemyDecal'
-  return m
 }
 
-/** Sniper aim laser: unlit red, per-instance opacity. */
+/** Shared screen quad: unit plane with UVs pre-scaled to one atlas cell. */
+let screenPlane: THREE.PlaneGeometry | null = null
+function screenPlaneGeo(): THREE.PlaneGeometry {
+  if (!screenPlane) {
+    screenPlane = new THREE.PlaneGeometry(1, 1)
+    const uv = screenPlane.attributes.uv as THREE.BufferAttribute
+    for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) / ATLAS_GRID, uv.getY(i) / ATLAS_GRID)
+  }
+  return screenPlane
+}
+
+/** Sniper aim laser: unlit green (sniper's glow family), per-instance opacity. */
 function laserMaterial(): THREE.MeshBasicMaterial {
   const m = new THREE.MeshBasicMaterial({
-    color: 0xff2038,
+    color: 0x38ff7a,
     transparent: true,
     toneMapped: false, // keep neon punch through tone mapping for bloom
   })
@@ -159,7 +184,11 @@ interface KindBatch {
   parts: PartRuntime[]
   flashAttr: THREE.InstancedBufferAttribute // shared by every chassis/dark part
   glowAttrs: Record<string, THREE.InstancedBufferAttribute> // one per glow key
-  decalLocal: THREE.Matrix4 // torso-local emblem placement
+  screen: THREE.InstancedMesh // glowing head-display quad (one per kind)
+  screenCell: THREE.InstancedBufferAttribute // atlas cell per instance
+  screenGlow: THREE.InstancedBufferAttribute // brightness mult (attack boost / death flicker)
+  screenMat: THREE.ShaderMaterial
+  screenLocal: THREE.Matrix4 // head-local screen placement
   cursor: number
   outlineCount: number // leading instances that get outline shells this frame
 }
@@ -213,11 +242,30 @@ function buildKindBatch(kind: EnemyKind, parent: THREE.Group, darkMat: THREE.Mes
     parts.push({ src: tp.mesh, mesh, rim: mkHull(rim, 30), xray: mkHull(xray, 45) })
   }
 
-  const d = DECAL_PLACEMENT[kind]
-  const decalLocal = new THREE.Matrix4()
-    .makeTranslation(0, d.y, d.z)
-    .multiply(new THREE.Matrix4().makeScale(d.s, d.s, d.s))
-  return { rig, parts, flashAttr, glowAttrs, decalLocal, cursor: 0, outlineCount: 0 }
+  // glowing head-display quad: transformed from the posed head node per instance
+  const sp = SCREEN_PLACEMENT[kind]
+  const screenCell = dynAttr(2)
+  const screenGlow = dynAttr(1)
+  const screenMat = screenMaterial(sp.tint)
+  const screen = new THREE.InstancedMesh(
+    wrapGeo(screenPlaneGeo(), { aCell: screenCell, aGlow: screenGlow }), screenMat, CAPACITY,
+  )
+  screen.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
+  screen.count = 0
+  screen.visible = false
+  screen.frustumCulled = false
+  screen.castShadow = false
+  screen.receiveShadow = false
+  parent.add(screen)
+  const screenLocal = new THREE.Matrix4()
+    .makeTranslation(sp.x, sp.y, sp.z)
+    .multiply(new THREE.Matrix4().makeScale(sp.w, sp.h, 1))
+
+  return {
+    rig, parts, flashAttr, glowAttrs,
+    screen, screenCell, screenGlow, screenMat, screenLocal,
+    cursor: 0, outlineCount: 0,
+  }
 }
 
 // module-scope scratch (no per-frame allocation)
@@ -233,9 +281,6 @@ export class EnemyBatcher {
   /** attach this to the Enemies root group (module singleton — re-parent freely) */
   group = new THREE.Group()
   private kinds: Record<EnemyKind, KindBatch>
-  private decalMesh: THREE.InstancedMesh
-  private decalCell: THREE.InstancedBufferAttribute
-  private decalCursor = 0
   private laserMesh: THREE.InstancedMesh
   private laserOp: THREE.InstancedBufferAttribute
   private laserCursor = 0
@@ -248,21 +293,6 @@ export class EnemyBatcher {
       tank: buildKindBatch('tank', this.group, darkMat),
       sniper: buildKindBatch('sniper', this.group, darkMat),
     }
-
-    // one plane for every enemy's chest emblem, atlas cell per instance
-    this.decalCell = dynAttr(2)
-    const decalGeo = new THREE.PlaneGeometry(1, 1)
-    const uv = decalGeo.attributes.uv as THREE.BufferAttribute
-    for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) / ATLAS_GRID, uv.getY(i) / ATLAS_GRID)
-    decalGeo.setAttribute('aCell', this.decalCell)
-    this.decalMesh = new THREE.InstancedMesh(decalGeo, decalMaterial(), CAPACITY)
-    this.decalMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
-    this.decalMesh.count = 0
-    this.decalMesh.visible = false
-    this.decalMesh.frustumCulled = false
-    this.decalMesh.castShadow = false
-    this.decalMesh.receiveShadow = false
-    this.group.add(this.decalMesh)
 
     // one box for every live sniper aim laser
     this.laserOp = dynAttr(1)
@@ -277,6 +307,11 @@ export class EnemyBatcher {
     this.group.add(this.laserMesh)
   }
 
+  /** Per-frame shader clock for the head-screen scanline/flicker. */
+  setTime(t: number): void {
+    for (const k of KINDS) this.kinds[k].screenMat.uniforms.uTime.value = t
+  }
+
   /** Start a frame: rewind all instance cursors. */
   begin(): void {
     for (const k of KINDS) {
@@ -284,7 +319,6 @@ export class EnemyBatcher {
       kb.cursor = 0
       kb.outlineCount = 0
     }
-    this.decalCursor = 0
     this.laserCursor = 0
   }
 
@@ -301,15 +335,15 @@ export class EnemyBatcher {
     for (const p of kb.parts) p.mesh.setMatrixAt(i, p.src.matrixWorld)
     kb.flashAttr.setX(i, flash)
     for (const key of kb.rig.glowKeys) kb.glowAttrs[key].setX(i, glow[key] ?? 1)
+    logoCellOffset(e.data.logo ?? e.id % LOGO_COUNT, _cell)
 
-    // chest emblem rides the torso
-    const torso = kb.rig.nodes.torso
-    if (torso && this.decalCursor < CAPACITY) {
-      const di = this.decalCursor++
-      _m4.multiplyMatrices(torso.matrixWorld, kb.decalLocal)
-      this.decalMesh.setMatrixAt(di, _m4)
-      logoCellOffset(e.data.logo ?? e.id % LOGO_COUNT, _cell)
-      this.decalCell.setXY(di, _cell.x, _cell.y)
+    // glowing logo display rides the posed head (follows head pitch/death tilt)
+    const head = kb.rig.nodes.head
+    if (head) {
+      _m4.multiplyMatrices(head.matrixWorld, kb.screenLocal)
+      kb.screen.setMatrixAt(i, _m4)
+      kb.screenCell.setXY(i, _cell.x, _cell.y)
+      kb.screenGlow.setX(i, glow.screen ?? 1)
     }
 
     // sniper aim laser
@@ -350,17 +384,15 @@ export class EnemyBatcher {
         p.xray.visible = on > 0
         if (n > 0) p.mesh.instanceMatrix.needsUpdate = true
       }
+      kb.screen.count = n
+      kb.screen.visible = n > 0
       if (n > 0) {
         kb.flashAttr.needsUpdate = true
         for (const key of kb.rig.glowKeys) kb.glowAttrs[key].needsUpdate = true
+        kb.screen.instanceMatrix.needsUpdate = true
+        kb.screenCell.needsUpdate = true
+        kb.screenGlow.needsUpdate = true
       }
-    }
-    const dn = this.decalCursor
-    this.decalMesh.count = dn
-    this.decalMesh.visible = dn > 0
-    if (dn > 0) {
-      this.decalMesh.instanceMatrix.needsUpdate = true
-      this.decalCell.needsUpdate = true
     }
     const ln = this.laserCursor
     this.laserMesh.count = ln

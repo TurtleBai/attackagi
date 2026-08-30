@@ -171,28 +171,30 @@ function poseMelee(e: Enemy, r: KindRig): void {
     setRot(r, 'armR', -2.25 * k, 0, -0.45 * k)
     setRot(r, 'torso', 0, -0.5 * k, 0)
     setRot(r, 'weapon', 0.7 * k, 0, 0)
-    setGlow('eye', 1 + 1.6 * k)
+    setGlow('screen', 1 + 0.9 * k)
     setGlow('blade', 1 + 0.8 * k)
   } else if (e.state === 'swing') {
     const k = easeIn(clamp01(t / 0.2))
     setRot(r, 'armR', -2.25 + 3.2 * k, 0, -0.45 + 0.45 * k)
     setRot(r, 'torso', 0.12 * k, -0.5 + 0.95 * k, 0)
     setRot(r, 'weapon', 0.7 - 0.9 * k, 0, 0)
-    setGlow('eye', 2.4)
+    setGlow('screen', 1.9)
     setGlow('blade', 2.2)
   } else if (e.state === 'cooldown') {
     const k = 1 - clamp01(t / 0.45)
     setRot(r, 'armR', 0.95 * k, 0, 0)
     setRot(r, 'torso', 0.12 * k, 0.45 * k, 0)
-    setGlow('eye', 1)
     setGlow('blade', 1)
   } else {
-    setGlow('eye', 1)
     setGlow('blade', 1)
   }
 }
 
 function poseRanger(e: Enemy, r: KindRig, step: number, running: boolean): void {
+  // both hands are baked onto the rifle — pin the arm stubs to their aimed base
+  // so the walk-swing baseline can't pull the elbows off the baked forearms
+  setRot(r, 'armL')
+  setRot(r, 'armR')
   const p = world.player
   const dx = p.pos.x - e.pos.x, dz = p.pos.z - e.pos.z
   const dist = Math.hypot(dx, dz) || 1e-4
@@ -203,7 +205,7 @@ function poseRanger(e: Enemy, r: KindRig, step: number, running: boolean): void 
   setPos(r, 'weapon', 0, 0, -0.07 * mz)
   setRot(r, 'head', -pitch * 0.5, 0, 0)
   setGlow('muzzle', 1 + 14 * mz)
-  setGlow('eye', 1 + 0.6 * mz)
+  setGlow('screen', 1 + 0.5 * mz)
 }
 
 /**
@@ -228,19 +230,18 @@ function poseTank(e: Enemy, r: KindRig, step: number): void {
     RM.tiltX += 0.14 * k
     RM.bobY -= 0.1 * k
     RM.shakeX += Math.sin(e.stateT * 46) * 0.02 * k
-    setGlow('eye', 1 + 2.5 * k)
+    setGlow('screen', 1 + 1.0 * k)
     setGlow('slit', 1 + 2.5 * k)
   } else if (e.state === 'dash') {
     RM.tiltX += 0.26
-    setGlow('eye', 3.5)
+    setGlow('screen', 2.2)
     setGlow('slit', 3.5)
   } else if (e.state === 'stagger') {
     RM.tiltX += -0.3 + Math.sin(e.stateT * 18) * 0.06 * Math.max(0, 1 - e.stateT)
     const fl = Math.sin(e.stateT * 34) * 0.5 + 0.5
-    setGlow('eye', 0.4 + fl * 0.8)
+    setGlow('screen', 0.4 + fl * 0.8)
     setGlow('slit', 0.4 + fl * 0.8)
   } else {
-    setGlow('eye', 1)
     setGlow('slit', 1)
   }
 }
@@ -256,6 +257,10 @@ function poseSniper(e: Enemy, r: KindRig): void {
     pitchAng = Math.atan2(p.pos.y + 1.2 - (e.pos.y + 1.55), dist)
   }
   const rc = (e.data.recoilT ?? 0) / 0.55
+  // arms pinned to the aimed base pose — the gripping forearms are baked into
+  // the rifle merge, so any arm swing would pull elbows off the weapon
+  setRot(r, 'armL')
+  setRot(r, 'armR')
   setRot(r, 'weapon', -pitchAng * 0.8 - 0.5 * rc * rc, 0, 0)
   setRot(r, 'head', -pitchAng * 0.4, 0, 0)
   RM.tiltX -= 0.1 * rc * rc
@@ -263,13 +268,11 @@ function poseSniper(e: Enemy, r: KindRig): void {
   if (e.state === 'track') {
     const k = clamp01(e.stateT / SNIPER_TRACK_DUR)
     setGlow('lens', 0.7 + 2.6 * k)
-    setGlow('eye', 1)
   } else if (e.state === 'aim') {
     setGlow('lens', 4 + Math.sin(e.stateT * 30) * 0.6)
-    setGlow('eye', 2)
+    setGlow('screen', 1.6)
   } else {
     setGlow('lens', 1)
-    setGlow('eye', 1)
   }
   // live laser sight: faint while tracking, hard while locked
   const mn = r.nodes.muzzle
@@ -311,6 +314,7 @@ function poseBody(e: Enemy, r: KindRig, step: number, running: boolean): number 
 
   // per-enemy pose outputs default off; branches below override
   for (const k of r.glowKeys) GLOW[k] = 1
+  GLOW.screen = 1 // head logo display (not a template part — committed separately)
   LASER.on = false
 
   // locomotion cycle
@@ -338,11 +342,14 @@ function poseBody(e: Enemy, r: KindRig, step: number, running: boolean): number 
   if (e.kind === 'tank') poseTankShield(e, r)
 
   if (e.falling) {
-    // limbs flail on the way down
+    // limbs flail on the way down — except rifle carriers, whose gripping
+    // forearms are baked into the weapon: their arms stay pinned to the hold
     setRot(r, 'legL', 0.45, 0, 0.12)
     setRot(r, 'legR', -0.35, 0, -0.12)
-    setRot(r, 'armL', -0.7 + Math.sin(world.time * 9 + e.id) * 0.25, 0, 0.5)
-    setRot(r, 'armR', -0.6 + Math.cos(world.time * 8 + e.id) * 0.25, 0, -0.5)
+    if (e.kind !== 'ranger' && e.kind !== 'sniper') {
+      setRot(r, 'armL', -0.7 + Math.sin(world.time * 9 + e.id) * 0.25, 0, 0.5)
+      setRot(r, 'armR', -0.6 + Math.cos(world.time * 8 + e.id) * 0.25, 0, -0.5)
+    }
     RM.tiltX = Math.sin(world.time * 3 + e.id * 2.1) * 0.12
   } else if (dyingT < 0) {
     // walk/idle baseline; per-kind overlays refine
@@ -362,6 +369,7 @@ function poseBody(e: Enemy, r: KindRig, step: number, running: boolean): number 
     setRot(r, 'armR', -0.3 * tip, 0, -0.5 * tip)
     setRot(r, 'head', 0.4 * tip, 0.3 * tip, 0)
     for (const k of r.glowKeys) GLOW[k] = deathGlow
+    GLOW.screen = deathGlow
   }
 
   // landing squash & stretch
@@ -532,6 +540,7 @@ export function Enemies() {
     const highlightStragglers =
       gs.phase === 'wave' && gs.enemiesRemaining > 0 && gs.enemiesRemaining <= STRAGGLER_OUTLINE_COUNT
     updateOutlinePulse(world.time)
+    batch.setTime(world.time)
     batch.begin()
     for (const k of KINDS) {
       aliveByKind[k].length = 0

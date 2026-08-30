@@ -181,7 +181,7 @@ function HpPanel() {
 // ─── Weapon panel + slot pills (bottom-right) ────────────────────────────────
 
 const WEAPON_META: Record<WeaponSlot, { name: string; hint: string; tag: string }> = {
-  1: { name: 'M9 SIDEARM', hint: 'HOLD LMB · R RELOAD', tag: 'PST' },
+  1: { name: 'R6 JUDGE', hint: 'HOLD LMB · R RELOAD', tag: 'RVL' },
   2: { name: 'CQC BAT', hint: 'HOLD LMB · CHARGE ×3', tag: 'BAT' },
   3: { name: 'MOLOTOV', hint: 'RMB AIM · LMB THROW', tag: 'MLT' },
 }
@@ -189,12 +189,12 @@ const WEAPON_META: Record<WeaponSlot, { name: string; hint: string; tag: string 
 /** Minimal weapon silhouettes (currentColor) for the panel header + slot pills. */
 function WeaponIcon({ slot, className }: { slot: WeaponSlot; className?: string }) {
   if (slot === 1) {
-    // pistol: slide, grip, trigger guard
+    // revolver: barrel, cylinder bulge, hammer spur, grip, trigger guard
     return (
       <svg viewBox="0 0 24 24" className={className} aria-hidden="true">
         <path
           fill="currentColor"
-          d="M2 7h18v4.2h-6.9l-.9 1.9h-2.4l.6-1.9H9.2l-1.9 6.4H3.4l1.9-6.4H2V7Zm16.6 4.2h1.9l.9-1.4h-2.8v1.4Z"
+          d="M2 8h5.2l.9-1.6h1.6L9.2 8H21v3h-1.6l-.7 1.3h-3.2l-1-1.3h-2.3l-.8 1.7h-2.2l.5-1.7H8l-1.8 6.2H2.9L4.7 11H2V8Zm8.2 0a2.4 2.4 0 1 0 4.8 0 2.4 2.4 0 0 0-4.8 0Z"
         />
       </svg>
     )
