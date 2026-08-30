@@ -340,13 +340,13 @@ function buildRig(): WeaponRig {
 
   // sight glass (faint blue) + the emissive red dot on the sight axis
   const sightGlassMat = new THREE.MeshBasicMaterial({
-    color: 0x86bfff, transparent: true, opacity: 0.10, depthWrite: false, side: THREE.DoubleSide,
+    color: 0x86bfff, transparent: true, opacity: 0.045, depthWrite: false, side: THREE.DoubleSide,
   })
   const sightGlass = new THREE.Mesh(new THREE.CircleGeometry(0.0115, 20), sightGlassMat)
   sightGlass.position.set(0, 0.118, -0.013)
   sightGlass.renderOrder = 4
   const redDotMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(5.0, 0.35, 0.3), toneMapped: false })
-  const redDot = new THREE.Mesh(new THREE.CircleGeometry(0.0024, 12), redDotMat)
+  const redDot = new THREE.Mesh(new THREE.CircleGeometry(0.0015, 12), redDotMat)
   redDot.position.set(0, 0.118, -0.0145)
   redDot.renderOrder = 5
   const dots = new THREE.Group()

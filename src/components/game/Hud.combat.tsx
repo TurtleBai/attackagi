@@ -217,13 +217,20 @@ const WEAPON_META: Record<WeaponSlot, { name: string; hint: string; tag: string 
 /** Minimal weapon silhouettes (currentColor) for the panel header + slot pills. */
 function WeaponIcon({ slot, className }: { slot: WeaponSlot; className?: string }) {
   if (slot === 1) {
-    // revolver: barrel, cylinder bulge, hammer spur, grip, trigger guard
+    // revolver, side profile: barrel + shroud, donut cylinder, top strap,
+    // hammer spur, swept-back grip, trigger guard hook
     return (
-      <svg viewBox="0 0 24 24" className={className} aria-hidden="true">
+      <svg viewBox="0 0 24 24" className={className} aria-hidden="true" fill="currentColor">
+        <rect x="1.5" y="8.4" width="8" height="2.1" rx="0.4" />
+        <rect x="2" y="10.9" width="4.6" height="1.1" rx="0.4" />
+        <rect x="8.8" y="6.9" width="8.3" height="1.2" rx="0.4" />
         <path
-          fill="currentColor"
-          d="M2 8h5.2l.9-1.6h1.6L9.2 8H21v3h-1.6l-.7 1.3h-3.2l-1-1.3h-2.3l-.8 1.7h-2.2l.5-1.7H8l-1.8 6.2H2.9L4.7 11H2V8Zm8.2 0a2.4 2.4 0 1 0 4.8 0 2.4 2.4 0 0 0-4.8 0Z"
+          fillRule="evenodd"
+          d="M12.4 6.7a3.2 3.2 0 1 1 0 6.4 3.2 3.2 0 0 1 0-6.4Zm0 2a1.2 1.2 0 1 0 0 2.4 1.2 1.2 0 0 0 0-2.4Z"
         />
+        <path d="M17 6.9l2-1.6 1.2 1.4-1.9 1.6z" />
+        <path d="M15.6 8.1h3.3l.7 2-2.2 1 1.6 5.5-3.4 1.9-1.9-6.5.9-1.7z" />
+        <path d="M11.8 13.2c.1 1.5 1 2.3 2.3 2.4l.3-1.2c-.8-.2-1.2-.6-1.3-1.3z" />
       </svg>
     )
   }
