@@ -5,6 +5,7 @@ import { HudFx } from './Hud.fx'
 import { PauseScreen } from './Hud.pause'
 import { PerfHud } from './Hud.perf'
 import { BuffSelect, DeathScreen, MenuScreen, VictoryScreen } from './Hud.screens'
+import { MobileControls } from './MobileControls'
 
 // DOM overlay rendered outside the Canvas. Root is pointer-events-none;
 // interactive screens (menu / buff select / death / victory) opt back in.
@@ -20,6 +21,8 @@ export function Hud() {
       <PerfHud />
       <div key={runId} className="absolute inset-0">
         <HudFx />
+        {/* before CombatHud: combat panels paint above the touch surfaces */}
+        <MobileControls />
         {inCombat && <CombatHud />}
         {phase === 'menu' && <MenuScreen />}
         {phase === 'paused' && <PauseScreen />}

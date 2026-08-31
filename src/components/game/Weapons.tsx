@@ -9,6 +9,7 @@ import {
 import { events } from '@/game/events'
 import { useSettings } from '@/game/settings'
 import { simRunning, useGame } from '@/game/store'
+import { isTouchDevice, touchInput } from '@/game/touch'
 import type { WeaponSlot } from '@/game/types'
 import { world } from '@/game/world'
 import { getArcAssets, getWeaponRig } from './Weapons.models'
@@ -26,6 +27,10 @@ const MOLO_POS = new THREE.Vector3(0.24, -0.27, -0.43)
 const MOLO_ROT = new THREE.Euler(0.12, 0.0, 0.22)
 const MOLO_AIM_POS = new THREE.Vector3(0.215, -0.16, -0.385)
 const MOLO_AIM_ROT = new THREE.Euler(-0.5, 0.08, 0.3)
+
+// Touch mode has no pointer lock — treat it as "locked" for every gameplay-input
+// gate below. Resolved once on mount (matchMedia per frame would allocate).
+let touchMode = false
 
 const STRIKE_AT = 0.42 // fraction of the swing when bat damage lands
 const BAT_MAX_TARGETS = 3 // a swing hits at most this many (nearest) enemies
@@ -59,6 +64,8 @@ const _zAxis = new THREE.Vector3(0, 0, 1)
 interface LocalState {
   vt: number // visual clock (always advances)
   triggerHeld: boolean // pistol full-auto: LMB held
+  prevTouchFire: boolean // last-seen touchInput.fire (edge detection)
+  prevTouchAim: boolean // last-seen touchInput.aim (edge detection)
   charging: boolean
   chargeT: number
   charge: number // 0..1 ratio
@@ -94,6 +101,7 @@ export function Weapons() {
   const st = useRef<LocalState>({
     vt: 0,
     triggerHeld: false,
+    prevTouchFire: false, prevTouchAim: false,
     charging: false, chargeT: 0, charge: 0,
     swingT: -1, swingCharge: 0, struck: true,
     reloadActive: false, reloadEnd: 0, reloadDur: 1,
@@ -114,6 +122,7 @@ export function Weapons() {
 
   const hardReset = () => {
     st.triggerHeld = false
+    st.prevTouchFire = false; st.prevTouchAim = false
     st.charging = false; st.chargeT = 0; st.charge = 0
     st.swingT = -1; st.swingCharge = 0; st.struck = true
     st.reloadActive = false; st.reloadEnd = 0
@@ -262,7 +271,7 @@ export function Weapons() {
     st.charge = 0
     const s = useGame.getState()
     if (s.batCharge !== 0) s.set({ batCharge: 0 })
-    if (!document.pointerLockElement || !simRunning(s.phase) || s.weapon !== 2) return
+    if ((!document.pointerLockElement && !touchMode) || !simRunning(s.phase) || s.weapon !== 2) return
     st.swingT = 0
     st.swingCharge = charge
     st.struck = false
@@ -327,7 +336,8 @@ export function Weapons() {
   // ── Input ──────────────────────────────────────────────────────────────────
 
   useEffect(() => {
-    const locked = () => document.pointerLockElement !== null
+    touchMode = isTouchDevice()
+    const locked = () => document.pointerLockElement !== null || touchMode
     const running = () => simRunning(useGame.getState().phase)
 
     const onKeyDown = (e: KeyboardEvent) => {
@@ -471,7 +481,49 @@ export function Weapons() {
     st.vt += step
     const s = useGame.getState()
     const running = simRunning(s.phase)
-    const locked = document.pointerLockElement !== null
+    const locked = document.pointerLockElement !== null || touchMode
+
+    // ── touch fire/aim: edge transitions mirror onMouseDown/onMouseUp exactly
+    // (press edges gated like mousedown; release edges always clear held state,
+    // even if the sim paused mid-hold — resetTouchInput drops fire/aim, and the
+    // next frame's release edge runs the same code path as mouseup) ──
+    if (touchMode) {
+      if (touchInput.aim !== st.prevTouchAim) {
+        st.prevTouchAim = touchInput.aim
+        if (touchInput.aim) {
+          if (running) {
+            if (s.weapon === 1) {
+              st.ads = true // revolver aim-down-sight
+            } else if (s.weapon === 3 && !st.aiming && s.molotovs > 0) {
+              st.aiming = true
+              s.set({ aimingMolotov: true })
+            }
+          }
+        } else {
+          st.ads = false
+          if (st.aiming) {
+            st.aiming = false
+            s.set({ aimingMolotov: false })
+          }
+        }
+      }
+      if (touchInput.fire !== st.prevTouchFire) {
+        st.prevTouchFire = touchInput.fire
+        if (touchInput.fire) {
+          if (running) {
+            if (s.weapon === 1) {
+              st.triggerHeld = true // full-auto: keeps firing below
+              tryFirePistol()
+            } else if (s.weapon === 2) {
+              if (st.swingT < 0 && !st.charging) { st.charging = true; st.chargeT = 0; st.charge = 0 }
+            } else if (s.weapon === 3 && st.aiming) throwMolotov()
+          }
+        } else {
+          st.triggerHeld = false
+          releaseBat()
+        }
+      }
+    }
 
     // visibility follows the equipped slot
     rig.pistol.group.visible = s.weapon === 1

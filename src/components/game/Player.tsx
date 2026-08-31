@@ -10,6 +10,7 @@ import { events } from '@/game/events'
 import { isCoarsePointer } from '@/game/quality'
 import { useSettings } from '@/game/settings'
 import { simRunning, useGame } from '@/game/store'
+import { takeLook, touchInput } from '@/game/touch'
 import { world } from '@/game/world'
 
 // First-person controller. Owns: pointer lock + mouse look, WASD/jump/dodge
@@ -23,6 +24,7 @@ import { world } from '@/game/world'
 
 // ─── Local feel tuning (visual/feel only — nothing below exists in constants) ─
 const LOOK_SENS = 0.0022 // rad per px of mouse movement
+const TOUCH_LOOK_MULT = 2 // touch-drag px feel ≈ 2× mouse (settings.lookSensitivity is the user knob)
 const PITCH_LIMIT = 1.5 // rad, spec clamp
 const ACCEL_GROUND = 12 // 1/s exponential approach of horizontal velocity
 const ACCEL_AIR = 5 // reduced steering while airborne
@@ -56,6 +58,7 @@ function registerLockRejection(): void {
 }
 
 // module-scope scratch (never allocated per-frame)
+const _look = { dx: 0, dy: 0 }
 const _fwd = new THREE.Vector3()
 const _right = new THREE.Vector3()
 const _desired = new THREE.Vector3()
@@ -93,7 +96,8 @@ export function Player() {
 
   useEffect(() => {
     const canvas = gl.domElement
-    if (isCoarsePointer()) noLock = true
+    const coarse = isCoarsePointer()
+    if (coarse) noLock = true
 
     const resetLocal = () => {
       keys.current.clear()
@@ -139,9 +143,11 @@ export function Player() {
     }
 
     // no-lock fallback look: client-position deltas of a single tracked pointer
-    // (touch drag on coarse devices; hover-look where a lock was refused)
+    // (desktop hover-look where a lock was refused). On coarse-pointer devices
+    // the MobileControls overlay owns look (its surfaces stopPropagation, but
+    // taps on HUD elements above it would still reach here — hard-disable).
     const onFallbackMove = (e: PointerEvent) => {
-      if (!noLock || document.pointerLockElement === canvas) return
+      if (coarse || !noLock || document.pointerLockElement === canvas) return
       const f = fbPointer.current
       if (!simRunning(useGame.getState().phase)) {
         f.active = false
@@ -263,29 +269,59 @@ export function Player() {
       return
     }
 
+    const running = simRunning(s.phase)
+
+    // ── touch look: consume overlay-accumulated deltas through the same
+    // sensitivity/pitch-clamp pipeline as mouse look. The overlay is the only
+    // writer and stops propagation, so the noLock pointermove fallback (also
+    // disabled on coarse pointers) can never double-apply. ──
+    if (running && touchInput.active) {
+      takeLook(_look)
+      if (_look.dx !== 0 || _look.dy !== 0) {
+        const sens = LOOK_SENS * TOUCH_LOOK_MULT * useSettings.getState().lookSensitivity
+        p.yaw -= _look.dx * sens
+        p.pitch = THREE.MathUtils.clamp(p.pitch - _look.dy * sens, -PITCH_LIMIT, PITCH_LIMIT)
+      }
+    }
+
     // shared basis for this frame's yaw
     const sy = Math.sin(p.yaw)
     const cy = Math.cos(p.yaw)
     _fwd.set(-sy, 0, -cy)
     _right.set(cy, 0, -sy)
 
-    const running = simRunning(s.phase)
-
     if (running) {
       const stats = s.stats
 
-      // ── movement intent (user-rebindable) ──
+      // ── movement intent (user-rebindable keys; touch stick wins while deflected) ──
       const b = useSettings.getState().bindings
       const kf = (keys.current.has(b.forward) ? 1 : 0) - (keys.current.has(b.back) ? 1 : 0)
       const kr = (keys.current.has(b.right) ? 1 : 0) - (keys.current.has(b.left) ? 1 : 0)
-      const ilen = Math.hypot(kr, kf)
-      p.moveInput.set(ilen > 0 ? kr / ilen : 0, ilen > 0 ? kf / ilen : 0)
+      const tm = touchInput.move
+      if (touchInput.active && (tm.x !== 0 || tm.y !== 0)) {
+        // analog stick vector: dead zone + 0..1 magnitude clamp applied by the overlay
+        p.moveInput.set(tm.x, tm.y)
+      } else {
+        const ilen = Math.hypot(kr, kf)
+        p.moveInput.set(ilen > 0 ? kr / ilen : 0, ilen > 0 ? kf / ilen : 0)
+      }
+      const moving = p.moveInput.x !== 0 || p.moveInput.y !== 0
+
+      // ── touch action taps merge into the exact same buffers as the keys ──
+      if (touchInput.jumpQueued) {
+        touchInput.jumpQueued = false
+        jumpBufferedAt.current = world.time
+      }
+      if (touchInput.dodgeQueued) {
+        touchInput.dodgeQueued = false
+        dodgeQueued.current = true
+      }
 
       // ── dodge ──
       if (dodgeQueued.current) {
         dodgeQueued.current = false
         if (p.alive && world.time >= p.dodgeReadyAt) {
-          if (ilen > 0) {
+          if (moving) {
             _dash
               .copy(_fwd)
               .multiplyScalar(p.moveInput.y)

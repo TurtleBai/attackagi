@@ -3,27 +3,34 @@ import { useEffect, useRef, useState } from 'react'
 import { Progress } from '@/components/ui/progress'
 import { WAVES } from '@/game/constants'
 import { events } from '@/game/events'
+import { useSettings, type BindableAction } from '@/game/settings'
 import { useGame } from '@/game/store'
+import { isTouchDevice } from '@/game/touch'
 import type { WeaponSlot } from '@/game/types'
 import { world } from '@/game/world'
 import { cn } from '@/lib/utils'
 import { HudPanel, MONO_LABEL, setStyle, useRafLoop } from './Hud.shared'
+import { pressKey } from './MobileControls'
 
 /** In-combat overlay: crosshair, HP, weapons, dodge, banners, boss bar, warnings. */
 
 export function CombatHud() {
   return (
     <>
-      <TopStatus />
-      <WaveBanner />
-      <BossBar />
-      <KillCounter />
+      {/* crosshair stays on the true screen center (camera axis), warning is
+          full-bleed; everything anchored to an edge respects the safe areas */}
       <Crosshair />
-      <HpPanel />
-      <WeaponPanel />
-      <DodgePip />
-      <StingerLayer />
       <WarningOverlay />
+      <div className="absolute top-[env(safe-area-inset-top)] right-[env(safe-area-inset-right)] bottom-[env(safe-area-inset-bottom)] left-[env(safe-area-inset-left)]">
+        <TopStatus />
+        <WaveBanner />
+        <BossBar />
+        <KillCounter />
+        <HpPanel />
+        <WeaponPanel />
+        <DodgePip />
+        <StingerLayer />
+      </div>
     </>
   )
 }
@@ -41,9 +48,10 @@ function TopStatus() {
   const phase = useGame((s) => s.phase)
   const danger = phase === 'smash' || phase === 'boss'
   return (
-    <div className="absolute top-4 left-4 flex items-center gap-2 font-mono text-[10px] tracking-[0.28em]">
+    <div className="absolute top-4 left-4 flex items-center gap-2 font-mono text-[10px] tracking-[0.28em] pointer-coarse:top-3 pointer-coarse:left-3">
       <span className={cn('inline-block size-1.5 rounded-full', danger ? 'bg-red-500 animate-pulse' : 'bg-emerald-400')} />
-      <span className={cn(danger ? 'text-red-300/90' : 'text-muted-foreground/90')}>
+      {/* truncated on touch so it never runs under the centered wave banner */}
+      <span className={cn('pointer-coarse:max-w-[24vw] pointer-coarse:truncate', danger ? 'text-red-300/90' : 'text-muted-foreground/90')}>
         UPLINK STABLE // {PHASE_LABEL[phase] ?? 'STANDBY'}
       </span>
       <span className="animate-pulse text-muted-foreground/60">█</span>
@@ -126,7 +134,8 @@ function Crosshair() {
       </svg>
       {weapon === 3 && aiming && (
         <span className="absolute top-full left-1/2 mt-2 -translate-x-1/2 font-mono text-[9px] tracking-[0.3em] whitespace-nowrap text-amber-300/90">
-          LMB THROW
+          <span className="pointer-coarse:hidden">LMB THROW</span>
+          <span className="hidden pointer-coarse:inline">FIRE THROWS</span>
         </span>
       )}
     </div>
@@ -168,7 +177,14 @@ function HpPanel() {
   const mid = pct < 60
   return (
     <HudPanel
-      className={cn('absolute bottom-4 left-4 w-64 px-3.5 py-3', low && 'border-red-500/60')}
+      className={cn(
+        'absolute bottom-4 left-4 w-64 px-3.5 py-3',
+        // compact viewports (narrow or landscape-phone short) + portrait touch:
+        // shrink ~0.8 and clear the horizontal weapon row
+        'origin-bottom-left max-sm:scale-[0.8] [@media(max-height:30rem)]:scale-[0.8]',
+        'portrait:pointer-coarse:bottom-28',
+        low && 'border-red-500/60',
+      )}
       accent={low ? 'border-red-500/70' : undefined}
     >
       <div className="mb-2 flex items-end justify-between">
@@ -208,11 +224,14 @@ function HpPanel() {
 
 // ─── Weapon panel + slot pills (bottom-right) ────────────────────────────────
 
-const WEAPON_META: Record<WeaponSlot, { name: string; hint: string; tag: string }> = {
-  1: { name: 'R6 JUDGE', hint: 'HOLD LMB · RMB AIM · R RELOAD', tag: 'RVL' },
-  2: { name: 'CQC BAT', hint: 'HOLD LMB · CHARGE ×3', tag: 'BAT' },
-  3: { name: 'MOLOTOV', hint: 'RMB AIM · LMB THROW', tag: 'MLT' },
+const WEAPON_META: Record<WeaponSlot, { name: string; hint: string; touchHint: string; tag: string }> = {
+  1: { name: 'R6 JUDGE', hint: 'HOLD LMB · RMB AIM · R RELOAD', touchHint: 'HOLD FIRE · AIM BTN · RELOAD', tag: 'RVL' },
+  2: { name: 'CQC BAT', hint: 'HOLD LMB · CHARGE ×3', touchHint: 'HOLD FIRE · CHARGE ×3', tag: 'BAT' },
+  3: { name: 'MOLOTOV', hint: 'RMB AIM · LMB THROW', touchHint: 'HOLD AIM · TAP FIRE', tag: 'MLT' },
 }
+
+/** Weapon-card taps route through the same key bindings the keyboard uses. */
+const SLOT_ACTION: Record<WeaponSlot, BindableAction> = { 1: 'weapon1', 2: 'weapon2', 3: 'weapon3' }
 
 /** Minimal weapon silhouettes (currentColor) for the panel header + slot pills. */
 function WeaponIcon({ slot, className }: { slot: WeaponSlot; className?: string }) {
@@ -293,11 +312,20 @@ function WeaponPanel() {
   const magEmpty = ammoInMag <= 0
 
   return (
-    <div className="absolute right-4 bottom-4 flex flex-col items-end gap-1.5">
+    <div
+      className={cn(
+        'absolute right-4 bottom-4 flex flex-col items-end gap-1.5',
+        // compact viewports: ~0.8 scale, tighter gaps
+        'origin-bottom-right max-sm:scale-[0.8] [@media(max-height:30rem)]:scale-[0.8]',
+        // touch: lay the stack out horizontally so the bottom-right corner
+        // stays free for the FIRE/AIM/JUMP/DODGE cluster above it
+        'pointer-coarse:right-3 pointer-coarse:bottom-3 pointer-coarse:flex-row pointer-coarse:items-end pointer-coarse:gap-1 pointer-coarse:scale-[0.8]',
+      )}
+    >
       {([1, 2, 3] as const).map((slot) => (
         <WeaponCard key={slot} slot={slot} active={weapon === slot} molotovs={molotovs} />
       ))}
-      <div className="mt-1 flex w-44 flex-col rounded-md border border-border/70 bg-background/65 px-3 py-2 backdrop-blur-sm">
+      <div className="mt-1 flex w-44 flex-col rounded-md border border-border/70 bg-background/65 px-3 py-2 backdrop-blur-sm pointer-coarse:mt-0 pointer-coarse:ml-1 pointer-coarse:w-40">
         <div className="flex items-baseline justify-center gap-1.5 font-mono text-[28px] leading-none font-black tabular-nums">
           {weapon === 1 &&
             (reloading ? (
@@ -336,7 +364,10 @@ function WeaponPanel() {
         <div className={cn('mt-1.5 h-0.5 w-full overflow-hidden rounded-full bg-muted/40', !reloading && 'opacity-0')}>
           <div ref={reloadRef} className="h-full bg-amber-400" style={{ width: '0%' }} />
         </div>
-        <span className="mt-1 text-center font-mono text-[9px] tracking-[0.2em] text-muted-foreground/80">{meta.hint}</span>
+        <span className="mt-1 text-center font-mono text-[9px] tracking-[0.2em] text-muted-foreground/80">
+          <span className="pointer-coarse:hidden">{meta.hint}</span>
+          <span className="hidden pointer-coarse:inline">{meta.touchHint}</span>
+        </span>
       </div>
     </div>
   )
@@ -348,8 +379,19 @@ function WeaponCard({ slot, active, molotovs }: { slot: WeaponSlot; active: bool
   const meta = WEAPON_META[slot]
   return (
     <div
+      role="button"
+      // touch: tappable weapon switch, routed through the same key handler
+      // (pointer-events stays off on fine pointers — desktop clicks keep
+      // falling through to the canvas for pointer-lock capture)
+      onPointerDown={(e) => {
+        if (!isTouchDevice()) return
+        e.preventDefault()
+        e.stopPropagation()
+        pressKey(useSettings.getState().bindings[SLOT_ACTION[slot]])
+      }}
       className={cn(
         'relative flex h-[4.4rem] w-24 flex-col items-center justify-center gap-1 rounded-md border backdrop-blur-sm transition-all duration-150',
+        'pointer-coarse:pointer-events-auto pointer-coarse:touch-none',
         active
           ? 'border-amber-300/80 bg-background/75 shadow-[0_0_16px_-4px_rgba(252,211,77,0.85)]'
           : 'border-border/70 bg-background/45 opacity-75',
@@ -410,7 +452,8 @@ function DodgePip() {
   }, { combat: true })
 
   return (
-    <div ref={wrapRef} className="absolute bottom-5 left-1/2 flex -translate-x-1/2 flex-col items-center gap-1">
+    // touch: raised above the horizontal weapon row
+    <div ref={wrapRef} className="absolute bottom-5 left-1/2 flex -translate-x-1/2 flex-col items-center gap-1 pointer-coarse:bottom-28">
       <svg width={34} height={34} viewBox="0 0 34 34">
         <circle cx={17} cy={17} r={PIP_R} fill="none" stroke="currentColor" strokeWidth={2} className="text-muted/60" />
         <circle
@@ -424,7 +467,7 @@ function DodgePip() {
           <path d="M18 12l4.5 5-4.5 5" />
         </g>
       </svg>
-      <span className="font-mono text-[9px] tracking-[0.3em] text-muted-foreground">SHIFT</span>
+      <span className="font-mono text-[9px] tracking-[0.3em] text-muted-foreground pointer-coarse:hidden">SHIFT</span>
     </div>
   )
 }
@@ -437,8 +480,8 @@ function WaveBanner() {
   const remaining = useGame((s) => s.enemiesRemaining)
   if (phase !== 'wave') return null
   return (
-    <div key={wave} className="hud-banner-in absolute top-5 left-1/2 flex -translate-x-1/2 flex-col items-center gap-1.5">
-      <div className="font-mono text-2xl font-bold tracking-[0.35em] text-foreground/95 drop-shadow-[0_2px_10px_rgba(0,0,0,0.9)]">
+    <div key={wave} className="hud-banner-in absolute top-5 left-1/2 flex -translate-x-1/2 flex-col items-center gap-1.5 max-sm:gap-1 [@media(max-height:30rem)]:top-3">
+      <div className="font-mono text-2xl font-bold tracking-[0.35em] text-foreground/95 drop-shadow-[0_2px_10px_rgba(0,0,0,0.9)] max-sm:text-lg [@media(max-height:30rem)]:text-lg">
         WAVE {wave} <span className="text-muted-foreground">/ {WAVES.length}</span>
       </div>
       <div className="flex items-center gap-2 rounded-[3px] border border-border bg-background/55 px-2.5 py-1 backdrop-blur-sm">
@@ -454,7 +497,8 @@ function WaveBanner() {
 function KillCounter() {
   const kills = useGame((s) => s.kills)
   return (
-    <HudPanel className="absolute top-4 right-4 px-3 py-2">
+    // touch: shifted left so the pause button owns the top-right corner
+    <HudPanel className="absolute top-4 right-4 px-3 py-2 pointer-coarse:top-3 pointer-coarse:right-16">
       <div className="flex items-center gap-2.5">
         <span className={MONO_LABEL}>KILLS</span>
         <span className="font-mono text-lg leading-none tabular-nums text-amber-200">{String(kills).padStart(3, '0')}</span>
@@ -473,7 +517,7 @@ function BossBar() {
   const frac = bossMaxHp > 0 ? Math.max(0, bossHp / bossMaxHp) : 0
   const pct = bossHp > 0 ? Math.max(1, Math.round(frac * 100)) : 0
   return (
-    <div className="hud-banner-in absolute top-5 left-1/2 w-[min(44rem,78vw)] -translate-x-1/2">
+    <div className="hud-banner-in absolute top-5 left-1/2 w-[min(44rem,78vw)] -translate-x-1/2 pointer-coarse:top-3 pointer-coarse:w-[min(44rem,calc(100%-7rem))]">
       <div className="relative mb-1.5 flex items-end justify-center px-0.5">
         <span className="font-mono text-sm font-bold tracking-[0.45em] text-red-400 drop-shadow-[0_0_10px_rgba(239,68,68,0.7)]">
           A.G.I.
@@ -522,12 +566,12 @@ function WarningOverlay() {
       />
       <div className="absolute top-[24%] left-1/2 flex -translate-x-1/2 flex-col items-center gap-3">
         <div className="hud-march h-2 w-[28rem] max-w-[72vw] opacity-90" style={HAZARD_STRIPES} />
-        <div className="hud-shake flex items-center gap-7">
-          <span className="animate-pulse font-mono text-6xl font-black text-red-500/90">»</span>
-          <span className="animate-pulse font-mono text-7xl font-black tracking-[0.25em] text-red-500 drop-shadow-[0_0_28px_rgba(239,68,68,0.95)] md:text-8xl">
+        <div className="hud-shake flex items-center gap-7 max-sm:gap-4">
+          <span className="animate-pulse font-mono text-6xl font-black text-red-500/90 max-sm:text-4xl [@media(max-height:30rem)]:text-4xl">»</span>
+          <span className="animate-pulse font-mono text-7xl font-black tracking-[0.25em] text-red-500 drop-shadow-[0_0_28px_rgba(239,68,68,0.95)] max-sm:text-5xl [@media(max-height:30rem)]:text-5xl md:text-8xl">
             {warning}
           </span>
-          <span className="animate-pulse font-mono text-6xl font-black text-red-500/90">«</span>
+          <span className="animate-pulse font-mono text-6xl font-black text-red-500/90 max-sm:text-4xl [@media(max-height:30rem)]:text-4xl">«</span>
         </div>
         <div
           className="hud-march h-2 w-[28rem] max-w-[72vw] opacity-90"

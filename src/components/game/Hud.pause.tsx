@@ -52,13 +52,13 @@ export function PauseScreen() {
 
   return (
     <div
-      className="pointer-events-auto absolute inset-0 flex items-center justify-center overflow-y-auto backdrop-blur-sm"
+      className="pointer-events-auto absolute inset-0 flex items-center-safe justify-center overflow-y-auto pr-[max(1rem,env(safe-area-inset-right))] pl-[max(1rem,env(safe-area-inset-left))] backdrop-blur-sm"
       style={{ background: 'rgba(8,10,18,0.72)' }}
     >
-      <div className="animate-in fade-in zoom-in-95 flex flex-col items-center gap-5 py-8 duration-300">
+      <div className="animate-in fade-in zoom-in-95 flex flex-col items-center gap-5 py-8 duration-300 max-sm:gap-4">
         <div className="flex flex-col items-center gap-1.5">
           <span className="font-mono text-[10px] tracking-[0.5em] text-amber-300/80">{'/// COMBAT SUSPENDED'}</span>
-          <GlitchText text="PAUSED" className="font-mono text-5xl font-black tracking-[0.2em] text-foreground" />
+          <GlitchText text="PAUSED" className="font-mono text-5xl font-black tracking-[0.2em] text-foreground max-sm:text-4xl" />
         </div>
 
         <div className="flex flex-wrap items-start justify-center gap-4">
@@ -69,7 +69,10 @@ export function PauseScreen() {
             <CardContent className="flex flex-col gap-5">
               <div className="flex flex-col gap-3">
                 <div className="flex items-center justify-between">
-                  <span className="font-mono text-[11px] tracking-[0.18em] text-muted-foreground">MOUSE SENSITIVITY</span>
+                  <span className="font-mono text-[11px] tracking-[0.18em] text-muted-foreground">
+                    <span className="pointer-coarse:hidden">MOUSE SENSITIVITY</span>
+                    <span className="hidden pointer-coarse:inline">TOUCH SENSITIVITY</span>
+                  </span>
                   <span className="font-mono text-xs tabular-nums text-amber-300">{sensitivity.toFixed(2)}×</span>
                 </div>
                 <Slider
@@ -128,18 +131,22 @@ export function PauseScreen() {
                     uiClick()
                     useGame.getState().restart()
                   }}
-                  className="h-9 font-mono text-[11px] tracking-[0.3em] text-muted-foreground"
+                  className="h-9 font-mono text-[11px] tracking-[0.3em] text-muted-foreground pointer-coarse:h-11"
                 >
                   RESTART RUN
                 </Button>
               </div>
-              <span className="text-center font-mono text-[9px] tracking-[0.2em] text-muted-foreground/60">
+              <span className="text-center font-mono text-[9px] tracking-[0.2em] text-muted-foreground/60 pointer-coarse:hidden">
                 ESC RESUMES · CLICK TO RECAPTURE CURSOR
+              </span>
+              <span className="hidden text-center font-mono text-[9px] tracking-[0.2em] text-amber-300/70 pointer-coarse:block">
+                TOUCH CONTROLS ACTIVE
               </span>
             </CardContent>
           </Card>
 
-          <Card className="w-[21rem] max-w-[86vw] bg-background/55 backdrop-blur-md">
+          {/* key bindings are meaningless on touch — the virtual controls are fixed */}
+          <Card className="w-[21rem] max-w-[86vw] bg-background/55 backdrop-blur-md pointer-coarse:hidden">
             <CardHeader>
               <CardTitle className="flex items-center justify-between font-mono text-[11px] tracking-[0.4em] text-muted-foreground">
                 <span>KEY BINDINGS</span>

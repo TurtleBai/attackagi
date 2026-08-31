@@ -7,6 +7,7 @@ import { events } from '@/game/events'
 import { TIER_KNOBS } from '@/game/quality'
 import { useSettings } from '@/game/settings'
 import { simRunning, useGame } from '@/game/store'
+import { touchInput } from '@/game/touch'
 import { world } from '@/game/world'
 import { AdaptiveQuality, FrameScheduler } from './AdaptiveQuality'
 import { Agi } from './Agi'
@@ -105,7 +106,7 @@ export default function GameCanvas() {
         scene.fog = new THREE.Fog(0x0b0e1a, 70, 260)
         if (process.env.NODE_ENV === 'development') {
           // dev-only debug/profiling handle (console: window.__game)
-          ;(window as unknown as Record<string, unknown>).__game = { gl, scene, camera, world, store: useGame, events }
+          ;(window as unknown as Record<string, unknown>).__game = { gl, scene, camera, world, store: useGame, events, touch: touchInput }
         }
       }}
     >
