@@ -15,6 +15,20 @@ const AMBIENT_DUCK_LEVEL = 0.6 // ≈40% reduction while ducked
 const AMBIENT_DUCK_TIME = 0.8
 const MIN_ENV = 0.0008 // exponential-ramp floor (can't ramp to 0)
 
+// ─── Global one-shot burst budget ────────────────────────────────────────────
+// Caps WebAudio voice creation at ~6 one-shot units per 16ms window so
+// molotov-pile frames (ignite + explosion + deaths + hits stacking through
+// their individual per-type gates) can't spike 25-80 node creations in one
+// frame. Player-relevant sounds (shot / reload / playerHit / feedback clangs)
+// ALWAYS play — they only consume the window, displacing world noise. Enemy
+// hit/death spam beyond the budget is dropped, with a tiny random keep-chance
+// so big piles still audibly crackle. Chunky one-shots cost more units
+// (roughly proportional to how many voices they schedule). Per-type gates are
+// unchanged and still run first.
+const ONE_SHOT_BUDGET = 6
+const BUDGET_WINDOW_MS = 16
+const DROP_KEEP_CHANCE = 0.1
+
 interface Vec3Like { x: number; y: number; z: number }
 
 interface FilterOpts {
@@ -61,6 +75,8 @@ class AudioEngine {
   private ambient: GainNode | null = null
   private lastPlay = new Map<string, number>()
   private muted = false
+  private budgetWindowStart = 0
+  private budgetUsed = 0
   private shimmer: { g: GainNode; oscs: OscillatorNode[]; dinged: boolean } | null = null
 
   hasContext(): boolean { return this.ctx !== null }
@@ -117,6 +133,36 @@ class AudioEngine {
     const last = this.lastPlay.get(key)
     if (last !== undefined && t - last < minGap) return false
     this.lastPlay.set(key, t)
+    return true
+  }
+
+  /** Roll the burst-budget window forward when 16ms have elapsed. */
+  private refreshBudget(): void {
+    const t = performance.now()
+    if (t - this.budgetWindowStart >= BUDGET_WINDOW_MS) {
+      this.budgetWindowStart = t
+      this.budgetUsed = 0
+    }
+  }
+
+  /**
+   * Always-play one-shot (player-relevant): consume `cost` units of the
+   * current window so droppable world spam yields to it. Never blocks.
+   */
+  private spend(cost: number): void {
+    this.refreshBudget()
+    this.budgetUsed += cost
+  }
+
+  /**
+   * Droppable world one-shot (enemy hits/deaths): true when it fits the
+   * window's remaining budget, else drop — with a tiny random keep-chance so
+   * dense piles still crackle instead of going silent.
+   */
+  private budget(cost: number): boolean {
+    this.refreshBudget()
+    if (this.budgetUsed + cost > ONE_SHOT_BUDGET && Math.random() >= DROP_KEEP_CHANCE) return false
+    this.budgetUsed += cost
     return true
   }
 
@@ -352,6 +398,7 @@ class AudioEngine {
    */
   shot(): void {
     if (!this.live()) return
+    this.spend(2) // always plays; squeezes world noise out of this window
     const t0 = this.now()
     // hammer strike (tiny mechanical transient right at t0)
     this.burst({ t0, dur: 0.012, gain: 0.3, filter: { type: 'bandpass', from: 3400, q: 1.4 } })
@@ -377,6 +424,7 @@ class AudioEngine {
    */
   reload(duration: number): void {
     if (!this.live()) return
+    this.spend(4) // ~20 scheduled voices created up-front; always plays
     const t0 = this.now()
     const d = Math.max(0.4, duration)
     // cylinder swing-out clunk near the start
@@ -420,6 +468,7 @@ class AudioEngine {
   /** Low thud + metallic crunch (always near the player — no distance rolloff). */
   batHit(charged: number): void {
     if (!this.live()) return
+    this.spend(2)
     const c = Math.min(1, Math.max(0, charged))
     this.tone({ type: 'sine', from: 100, to: 54, sweepT: 0.12, dur: 0.18, gain: 0.42 + 0.28 * c })
     this.burst({ dur: 0.13, gain: 0.28 + 0.2 * c, filter: { type: 'bandpass', from: 2100, q: 0.8 } })
@@ -484,6 +533,7 @@ class AudioEngine {
   /** Whoomp + crackle burst when a fire patch ignites. */
   fireIgnite(pos?: Vec3Like | null): void {
     if (!this.live() || !this.gate('fireIgnite', 0.06)) return
+    this.spend(4) // whoomp + 8 crackles: chunky, player-caused — plays in full
     const dg = this.distGain(pos)
     const t0 = this.now()
     this.tone({ t0, type: 'sine', from: 180, to: 52, sweepT: 0.24, dur: 0.32, gain: 0.42 * dg })
@@ -504,6 +554,7 @@ class AudioEngine {
     if (!this.live()) return
     const layered = kind === 'bossDeath'
     if (!layered && !this.gate('explosion', 0.05)) return
+    this.spend(layered ? 4 : 2)
     const size = Math.min(2.4, Math.max(0.65, radius / MOLOTOV_RADIUS))
     this.explosionCore(this.now(), layered ? Math.max(size, 2) : size, this.distGain(pos), layered)
     this.duckAmbient()
@@ -511,7 +562,7 @@ class AudioEngine {
 
   /** Short metal tick. */
   enemyHit(pos?: Vec3Like | null): void {
-    if (!this.live() || !this.gate('enemyHit', 0.035)) return
+    if (!this.live() || !this.gate('enemyHit', 0.035) || !this.budget(1)) return
     const dg = this.distGain(pos)
     this.burst({
       dur: 0.045, gain: 0.2 * dg, rate: 0.9 + Math.random() * 0.3,
@@ -522,7 +573,7 @@ class AudioEngine {
 
   /** Crunch + descending buzzy power-down blip. */
   enemyDeath(pos?: Vec3Like | null): void {
-    if (!this.live() || !this.gate('enemyDeath', 0.06)) return
+    if (!this.live() || !this.gate('enemyDeath', 0.06) || !this.budget(1)) return
     const dg = this.distGain(pos)
     this.burst({
       dur: 0.18, gain: 0.34 * dg, filter: { type: 'lowpass', from: 1250, to: 300, sweepT: 0.15 },
@@ -536,6 +587,7 @@ class AudioEngine {
   /** Bright metallic clang: inharmonic bell partials + tick. */
   shieldBlock(pos?: Vec3Like | null): void {
     if (!this.live() || !this.gate('shieldBlock', 0.05)) return
+    this.spend(2) // "your shot was blocked" is a gameplay telegraph — always plays
     const dg = this.distGain(pos)
     this.clang(this.now(), 520, 0.26 * dg, 0.3)
     this.burst({ dur: 0.03, gain: 0.14 * dg, filter: { type: 'highpass', from: 3000 } })
@@ -544,6 +596,7 @@ class AudioEngine {
   /** Dull body thump + brief highpass danger ring. */
   playerHit(): void {
     if (!this.live() || !this.gate('playerHit', 0.08)) return
+    this.spend(1)
     this.tone({ type: 'sine', from: 85, to: 48, sweepT: 0.13, dur: 0.17, gain: 0.46 })
     this.burst({ dur: 0.06, gain: 0.2, filter: { type: 'lowpass', from: 500 } })
     this.tone({ type: 'sine', from: 2300, dur: 0.3, gain: 0.055, attack: 0.01 })
@@ -569,6 +622,7 @@ class AudioEngine {
     if (!this.live()) return
     if (kind === 'deathBeam') {
       if (!this.gate('beam:death', 0.2)) return
+      this.spend(2)
       const t0 = this.now()
       // massive initial roar, then a sustained sizzle across the sweep
       this.tone({
@@ -588,11 +642,13 @@ class AudioEngine {
     }
     if (kind === 'stripe') {
       if (!this.gate('beam:stripe', 0.09)) return
+      this.spend(1)
       this.tone({ type: 'sawtooth', from: 1400, to: 240, sweepT: 0.26, dur: 0.3, gain: 0.24, lowpass: 2600 })
       this.burst({ dur: 0.24, gain: 0.14, filter: { type: 'highpass', from: 3000, q: 0.8 } })
       return
     }
     if (!this.gate('beam:sniper', 0.05)) return
+    this.spend(1)
     this.tone({ type: 'sawtooth', from: 2200, to: 300, sweepT: 0.16, dur: 0.2, gain: 0.28, lowpass: 3400 })
     this.burst({ dur: 0.15, gain: 0.17, filter: { type: 'highpass', from: 3800, q: 0.8 } })
   }
@@ -600,6 +656,7 @@ class AudioEngine {
   /** Motor whir rising over MINIGUN_SPINUP, then a firing buzz for MINIGUN_FIRE_TIME. */
   minigunSpinup(): void {
     if (!this.live() || !this.gate('minigun', 0.5)) return
+    this.spend(2)
     const ctx = this.ctx!
     const t0 = this.now()
     const g = ctx.createGain()
@@ -664,6 +721,7 @@ class AudioEngine {
   /** Deep metal impact + spark sizzle. Boss is far — keep feedback audible. */
   bossHit(pos?: Vec3Like | null): void {
     if (!this.live() || !this.gate('bossHit', 0.05)) return
+    this.spend(2) // the player's damage feedback on the boss — always plays
     const dg = Math.max(0.55, this.distGain(pos))
     this.tone({ type: 'sine', from: 72, to: 40, sweepT: 0.2, dur: 0.26, gain: 0.34 * dg })
     this.clang(this.now(), 300, 0.1 * dg, 0.2)

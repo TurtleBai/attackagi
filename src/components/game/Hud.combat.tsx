@@ -7,7 +7,7 @@ import { useGame } from '@/game/store'
 import type { WeaponSlot } from '@/game/types'
 import { world } from '@/game/world'
 import { cn } from '@/lib/utils'
-import { HudPanel, MONO_LABEL, useRafLoop } from './Hud.shared'
+import { HudPanel, MONO_LABEL, setStyle, useRafLoop } from './Hud.shared'
 
 /** In-combat overlay: crosshair, HP, weapons, dodge, banners, boss bar, warnings. */
 
@@ -69,22 +69,22 @@ function Crosshair() {
     if (!g || !ring) return
     const s = useGame.getState()
     const show = s.weapon === 2 && s.batCharge > 0.001
-    g.style.opacity = show ? '1' : '0'
+    setStyle(g, 'opacity', show ? '1' : '0')
     if (!show) return
     const c = Math.min(1, s.batCharge)
-    ring.style.strokeDashoffset = String(RING_C * (1 - c))
+    setStyle(ring, 'strokeDashoffset', String(RING_C * (1 - c)))
     if (c >= 1) {
       // max charge: flash white in sync with the bat (deterministic off world.time)
       const on = Math.sin(world.time * 16) > 0
-      ring.style.stroke = on ? '#ffffff' : '#fbbf24'
-      ring.style.filter = on
+      setStyle(ring, 'stroke', on ? '#ffffff' : '#fbbf24')
+      setStyle(ring, 'filter', on
         ? 'drop-shadow(0 0 7px rgba(255,255,255,0.95))'
-        : 'drop-shadow(0 0 4px rgba(251,191,36,0.8))'
+        : 'drop-shadow(0 0 4px rgba(251,191,36,0.8))')
     } else {
-      ring.style.stroke = '#fbbf24'
-      ring.style.filter = c > 0.85 ? 'drop-shadow(0 0 3px rgba(251,191,36,0.6))' : 'none'
+      setStyle(ring, 'stroke', '#fbbf24')
+      setStyle(ring, 'filter', c > 0.85 ? 'drop-shadow(0 0 3px rgba(251,191,36,0.6))' : 'none')
     }
-  })
+  }, { combat: true })
 
   return (
     <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2">
@@ -285,8 +285,8 @@ function WeaponPanel() {
     const rt = reloadT.current
     if (!el || !rt) return
     const p = Math.min(1, Math.max(0, (world.time - rt.start) / rt.dur))
-    el.style.width = `${(p * 100).toFixed(1)}%`
-  })
+    setStyle(el, 'width', `${(p * 100).toFixed(1)}%`)
+  }, { combat: true })
 
   const meta = WEAPON_META[weapon]
   const magLow = ammoInMag <= 2
@@ -397,17 +397,17 @@ function DodgePip() {
     const remaining = Math.max(0, world.player.dodgeReadyAt - world.time)
     const frac = cd > 0 ? 1 - Math.min(1, remaining / cd) : 1
     const ready = remaining <= 0
-    arc.style.strokeDashoffset = String(PIP_C * (1 - frac))
-    arc.style.stroke = ready ? '#e2e8f0' : '#f59e0b'
-    arc.style.filter = ready ? 'drop-shadow(0 0 4px rgba(226,232,240,0.7))' : 'none'
-    wrap.style.opacity = ready ? '1' : '0.72'
+    setStyle(arc, 'strokeDashoffset', String(PIP_C * (1 - frac)))
+    setStyle(arc, 'stroke', ready ? '#e2e8f0' : '#f59e0b')
+    setStyle(arc, 'filter', ready ? 'drop-shadow(0 0 4px rgba(226,232,240,0.7))' : 'none')
+    setStyle(wrap, 'opacity', ready ? '1' : '0.72')
     if (ready && !wasReady.current) {
       wrap.classList.remove('hud-ready-flash')
       void wrap.offsetWidth
       wrap.classList.add('hud-ready-flash')
     }
     wasReady.current = ready
-  })
+  }, { combat: true })
 
   return (
     <div ref={wrapRef} className="absolute bottom-5 left-1/2 flex -translate-x-1/2 flex-col items-center gap-1">

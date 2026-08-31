@@ -1,5 +1,6 @@
 'use client'
 import * as THREE from 'three'
+import { makeFbm } from '@/game/gfx/textures'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Vfx.shaders — every custom ShaderMaterial used by the Vfx module.
@@ -8,6 +9,38 @@ import * as THREE from 'three'
 // Factories return FRESH materials (per-slot uniforms); geometry is pooled by
 // the callers. Nothing here allocates per frame.
 // ─────────────────────────────────────────────────────────────────────────────
+
+// ─── Baked energy noise ──────────────────────────────────────────────────────
+// One small tiling fbm texture shared by the beam walls + fire glow discs.
+// Replaces their per-pixel 4-octave fbm (~16 sin calls/px) with a single
+// texture fetch. Tiles every NOISE_TEX_PERIOD noise units, so shaders sample
+// at (noiseCoord / NOISE_TEX_PERIOD) with RepeatWrapping.
+
+const NOISE_TEX_SIZE = 128
+export const NOISE_TEX_PERIOD = 8
+
+let noiseTex: THREE.CanvasTexture | null = null
+
+function energyNoiseTexture(): THREE.CanvasTexture {
+  if (noiseTex) return noiseTex
+  const size = NOISE_TEX_SIZE
+  const fbm = makeFbm(9107, NOISE_TEX_PERIOD)
+  const data = new Uint8ClampedArray(size * size * 4)
+  let i = 0
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++, i += 4) {
+      const v = Math.min(255, fbm((x / size) * NOISE_TEX_PERIOD, (y / size) * NOISE_TEX_PERIOD, 4) * 255) | 0
+      data[i] = v; data[i + 1] = v; data[i + 2] = v; data[i + 3] = 255
+    }
+  }
+  const canvas = document.createElement('canvas')
+  canvas.width = canvas.height = size
+  canvas.getContext('2d')!.putImageData(new ImageData(data, size, size), 0, 0)
+  noiseTex = new THREE.CanvasTexture(canvas)
+  noiseTex.wrapS = noiseTex.wrapT = THREE.RepeatWrapping
+  noiseTex.needsUpdate = true
+  return noiseTex
+}
 
 const NOISE2 = /* glsl */ `
 float vhash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123); }
@@ -23,7 +56,23 @@ float fbm(vec2 p){
 }
 `
 
-const NOISE3 = /* glsl */ `
+// 2-octave variant for high-fill flame quads; ×1.25 renormalizes the mean back
+// to the 4-octave range so erosion thresholds keep their old coverage.
+const NOISE2_LO = /* glsl */ `
+float vhash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123); }
+float vnoise(vec2 p){
+  vec2 i = floor(p); vec2 f = fract(p); f = f * f * (3.0 - 2.0 * f);
+  float a = vhash(i), b = vhash(i + vec2(1.0, 0.0)), c = vhash(i + vec2(0.0, 1.0)), d = vhash(i + vec2(1.0, 1.0));
+  return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+float fbm(vec2 p){
+  float s = 0.0; float a = 0.5;
+  for (int i = 0; i < 2; i++){ s += a * vnoise(p); p = p * 2.03 + vec2(17.13, 9.71); a *= 0.5; }
+  return s * 1.25;
+}
+`
+
+const NOISE3_CORE = /* glsl */ `
 float h3(vec3 p){ return fract(sin(dot(p, vec3(12.9898, 78.233, 37.719))) * 43758.5453); }
 float n3(vec3 p){
   vec3 i = floor(p); vec3 f = fract(p); f = f * f * (3.0 - 2.0 * f);
@@ -33,10 +82,24 @@ float n3(vec3 p){
     mix(mix(v000, v100, f.x), mix(v010, v110, f.x), f.y),
     mix(mix(v001, v101, f.x), mix(v011, v111, f.x), f.y), f.z);
 }
+`
+
+const NOISE3 = /* glsl */ `
+${NOISE3_CORE}
 float fbm3(vec3 p){
   float s = 0.0; float a = 0.5;
   for (int i = 0; i < 4; i++){ s += a * n3(p); p = p * 2.07 + vec3(11.31); a *= 0.5; }
   return s;
+}
+`
+
+// 2-octave fragment variant (fireball dissolve) — ×1.25 renormalized like NOISE2_LO.
+const NOISE3_LO = /* glsl */ `
+${NOISE3_CORE}
+float fbm3(vec3 p){
+  float s = 0.0; float a = 0.5;
+  for (int i = 0; i < 2; i++){ s += a * n3(p); p = p * 2.07 + vec3(11.31); a *= 0.5; }
+  return s * 1.25;
 }
 `
 
@@ -169,11 +232,14 @@ export function fireGlowMaterial(): THREE.ShaderMaterial {
   return mat({
     vert: QUAD_VERT,
     polygonOffset: true,
-    uniforms: { uTime: { value: 0 }, uFade: { value: 0 }, uSeed: { value: 0 } },
+    uniforms: {
+      uTime: { value: 0 }, uFade: { value: 0 }, uSeed: { value: 0 },
+      uNoise: { value: energyNoiseTexture() },
+    },
     frag: /* glsl */ `
 uniform float uTime, uFade, uSeed;
+uniform sampler2D uNoise;
 varying vec2 vUv;
-${NOISE2}
 void main(){
   // quad is cropped to radius*2.0 (was *2.3) by FirePatches; rescale so the
   // glow field keeps its exact old world-space footprint (2.0/2.3 = 0.8696) —
@@ -182,7 +248,8 @@ void main(){
   float r = length(p);
   if (r > 1.0) discard;
   float g = 1.0 - r;
-  float n = fbm(p * 2.4 + vec2(uSeed, uSeed * 0.7) + vec2(0.0, -uTime * 0.55));
+  // baked tiling fbm (1 fetch, was 4-octave analytic fbm = ~16 sin/px)
+  float n = texture2D(uNoise, (p * 2.4 + vec2(uSeed, uSeed * 0.7) + vec2(0.0, -uTime * 0.55)) / ${NOISE_TEX_PERIOD.toFixed(1)}).r;
   float flick = 0.78 + 0.22 * sin(uTime * 9.0 + uSeed * 13.0) * sin(uTime * 23.0 + uSeed * 7.0);
   vec3 col = mix(vec3(1.6, 0.30, 0.03), vec3(2.0, 1.05, 0.22), n) * g * g * flick;
   float a = g * g * (0.5 + 0.5 * n) * uFade;

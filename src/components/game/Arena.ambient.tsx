@@ -4,13 +4,17 @@ import { useMemo, useRef } from 'react'
 import * as THREE from 'three'
 import { ARENA_RADIUS, FRAME_PRIO } from '@/game/constants'
 import { seededRandom } from '@/game/gfx/textures'
+import { tierKnobs } from '@/game/quality'
 import { dotTexture } from './Arena.textures'
 
 // Ambient life: soft additive dust motes drifting over the whole arena and
 // occasional embers rising near the rim. Pure visual — animates in every phase.
+// Counts are STRUCTURAL tier knobs (read once at mount): tierKnobs().dustCount
+// / .emberCount. Dust sprites clamp gl_PointSize to 40px so near-camera motes
+// can't balloon into huge additive fill quads.
 
 function buildDust() {
-  const N = 360
+  const N = tierKnobs().dustCount
   const pos = new Float32Array(N * 3)
   const seed = new Float32Array(N)
   const rnd = seededRandom(60601)
@@ -43,7 +47,7 @@ function buildDust() {
         p.y = mod(p.y + uTime * (0.14 + sf * 0.2), 11.0);
         vec4 mv = modelViewMatrix * vec4(p, 1.0);
         float dist = max(1.0, -mv.z);
-        gl_PointSize = (2.4 + fract(aSeed * 0.53) * 3.0) * (16.0 / dist);
+        gl_PointSize = min((2.4 + fract(aSeed * 0.53) * 3.0) * (16.0 / dist), 40.0);
         vA = smoothstep(0.0, 1.4, p.y) * (1.0 - smoothstep(7.5, 11.0, p.y));
         vA *= 0.45 + 0.55 * (0.5 + 0.5 * sin(uTime * (0.8 + sf) + aSeed * 2.0));
         gl_Position = projectionMatrix * mv;
@@ -62,7 +66,7 @@ function buildDust() {
 }
 
 function buildEmbers() {
-  const N = 64
+  const N = tierKnobs().emberCount // 64 on every tier today — embers stay
   const pos = new Float32Array(N * 3)
   const seed = new Float32Array(N)
   const rnd = seededRandom(70707)

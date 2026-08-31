@@ -1,12 +1,16 @@
 'use client'
 import { useEffect, useRef, useState } from 'react'
+import { resolvedTier } from '@/game/quality'
+import { useSettings } from '@/game/settings'
 import { world } from '@/game/world'
 import { useRafLoop } from './Hud.shared'
 
 // Dev-only performance overlay, toggled with F1. Reads the renderer through the
 // window.__game debug handle (set by GameCanvas in development builds only).
 // Draw-call/triangle deltas are sampled per display frame with info.autoReset
-// disabled while the overlay is open (restored on close).
+// disabled while the overlay is open (restored on close). Also shows the
+// resolved graphics tier + the adaptive controller's current pick so tier
+// stepping is observable while testing.
 
 interface GameHandle {
   gl: {
@@ -49,6 +53,9 @@ export function PerfHud() {
     if (open) {
       g.gl.info.autoReset = false
       g.gl.info.reset()
+      // fresh timing history so the first visible frame isn't a stale spike
+      s.current.last = 0
+      s.current.frames.length = 0
     } else {
       g.gl.info.autoReset = true
     }
@@ -59,7 +66,7 @@ export function PerfHud() {
   }, [open])
 
   useRafLoop((now) => {
-    if (!open || !ref.current) return
+    if (!ref.current) return
     const st = s.current
     const dt = st.last > 0 ? now - st.last : 16.7
     st.last = now
@@ -85,13 +92,21 @@ export function PerfHud() {
       }
     }
 
+    // resolved tier + adaptive controller state (tolerant of the store shape:
+    // `resolvedQuality` only exists once the adaptive controller has written it)
+    const set = useSettings.getState() as unknown as { quality?: string; resolvedQuality?: string }
+    const tierLine =
+      `tier ${resolvedTier()}  set ${set.quality ?? '?'}` +
+      (set.resolvedQuality ? `  adaptive ${set.resolvedQuality}` : '')
+
     const avg = st.frames.reduce((a, b) => a + b, 0) / st.frames.length
     const worst = Math.max(...st.frames)
     ref.current.textContent =
       `fps ${(1000 / avg).toFixed(0)}  avg ${avg.toFixed(1)}ms  worst ${worst.toFixed(0)}ms\n` +
+      `${tierLine}\n` +
       `${drawLine}\n` +
       `enemies ${world.enemies.size}  proj ${world.projectiles.length}  fx ${world.hazards.length + world.telegraphs.length}`
-  })
+  }, { enabled: open })
 
   if (!open) return null
   return (

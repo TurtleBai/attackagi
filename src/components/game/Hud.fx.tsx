@@ -2,7 +2,7 @@
 import { useEffect, useRef } from 'react'
 import { events } from '@/game/events'
 import { useGame } from '@/game/store'
-import { useRafLoop } from './Hud.shared'
+import { setStyle, useRafLoop } from './Hud.shared'
 
 /**
  * Screen-space feedback: hit vignette spike (rAF decay, no React re-render),
@@ -28,9 +28,9 @@ export function HudFx() {
     lastNow.current = now
 
     const dmg = dmgRef.current
-    if (dmg) {
+    if (dmg && dmgV.current > 0) {
       dmgV.current = Math.max(0, dmgV.current - dt * 4) // full fade in 250ms
-      dmg.style.opacity = dmgV.current.toFixed(3)
+      setStyle(dmg, 'opacity', dmgV.current.toFixed(3))
     }
 
     const low = lowRef.current
@@ -40,7 +40,7 @@ export function HudFx() {
       const active =
         frac < 0.3 &&
         (s.phase === 'wave' || s.phase === 'smash' || s.phase === 'boss' || s.phase === 'buffSelect')
-      low.style.opacity = active ? (0.2 + 0.12 * (0.5 + 0.5 * Math.sin(now / 260))).toFixed(3) : '0'
+      setStyle(low, 'opacity', active ? (0.2 + 0.12 * (0.5 + 0.5 * Math.sin(now / 260))).toFixed(3) : '0')
     }
   })
 
