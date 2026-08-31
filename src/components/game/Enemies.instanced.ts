@@ -19,7 +19,7 @@ import { ATLAS_GRID, logoAtlasTexture, logoCellOffset, LOGO_COUNT } from './Enem
 /** A few slots of headroom over the Director's hard cap, just in case. */
 const CAPACITY = MAX_CONCURRENT_ENEMIES + 4
 
-const KINDS: readonly EnemyKind[] = ['melee', 'ranger', 'tank', 'sniper']
+const KINDS: readonly EnemyKind[] = ['melee', 'ranger', 'tank', 'sniper', 'drone']
 
 /** Per-frame sniper aim-laser request, filled by poseBody (Enemies.tsx). */
 export interface LaserSlot {
@@ -292,6 +292,8 @@ export class EnemyBatcher {
       ranger: buildKindBatch('ranger', this.group, darkMat),
       tank: buildKindBatch('tank', this.group, darkMat),
       sniper: buildKindBatch('sniper', this.group, darkMat),
+      // sized CAPACITY (cap-based) like every kind — never per-wave-quota
+      drone: buildKindBatch('drone', this.group, darkMat),
     }
 
     // one box for every live sniper aim laser

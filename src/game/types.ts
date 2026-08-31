@@ -3,7 +3,7 @@ import type { BuffId } from './constants'
 
 export type GamePhase = 'menu' | 'wave' | 'buffSelect' | 'smash' | 'boss' | 'victory' | 'dead' | 'paused'
 export type WeaponSlot = 1 | 2 | 3 // 1 pistol, 2 bat, 3 molotov
-export type EnemyKind = 'melee' | 'ranger' | 'tank' | 'sniper'
+export type EnemyKind = 'melee' | 'ranger' | 'tank' | 'sniper' | 'drone'
 export type BossFace = 'happy' | 'angry' | 'hurt' | 'tired' | 'surprised'
 export type BossPatternId = 'rockets' | 'deathBeam' | 'laserBullets' | 'punch' | 'stripeBarrage'
 

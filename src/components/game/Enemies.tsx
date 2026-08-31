@@ -3,21 +3,21 @@ import { useFrame } from '@react-three/fiber'
 import { useEffect, useRef } from 'react'
 import * as THREE from 'three'
 import {
-  FRAME_PRIO, GRAVITY,
+  DRONE_ALTITUDE, DRONE_CYCLE, DRONE_HP, FRAME_PRIO, GRAVITY,
   MELEE_HP, RANGER_HP, RANGER_INTERVAL, SNIPER_HP, STRAGGLER_OUTLINE_COUNT, TANK_HP, TANK_WINDUP,
 } from '@/game/constants'
 import { simRunning, useGame } from '@/game/store'
 import { world } from '@/game/world'
 import type { Enemy, EnemyKind } from '@/game/types'
 import {
-  aiMelee, aiRanger, aiSniper, aiTank, lerpAngle,
+  aiDrone, aiMelee, aiRanger, aiSniper, aiTank, DRONE_DROP_PULSE, lerpAngle,
   MELEE_WINDUP_DUR, SNIPER_TRACK_DUR,
 } from './Enemies.ai'
 import { getKindRig, updateOutlinePulse, type KindRig } from './Enemies.bodies'
 import { LOGO_COUNT } from './Enemies.decals'
 import { getEnemyBatcher, resetEnemyBatcher, type LaserSlot } from './Enemies.instanced'
 
-// The 4 robot enemy kinds: spawning (drains world.pendingSpawns), AI state machines
+// The 5 robot enemy kinds: spawning (drains world.pendingSpawns), AI state machines
 // (Enemies.ai), locomotion/attack posing against ONE shared template rig per kind
 // (Enemies.bodies), instanced crowd rendering (Enemies.instanced), hit-flash,
 // drop-in falls with dust, and death collapse → world.removeEnemy.
@@ -26,16 +26,17 @@ const DYING_TIME = 1.1
 const LAND_TIME = 0.28
 const SEP_RADIUS = 1.3
 
-const KINDS: readonly EnemyKind[] = ['melee', 'ranger', 'tank', 'sniper']
+const KINDS: readonly EnemyKind[] = ['melee', 'ranger', 'tank', 'sniper', 'drone']
 
 const KIND_DEF: Record<EnemyKind, { hp: number; r: number; h: number }> = {
   melee: { hp: MELEE_HP, r: 0.55, h: 2.1 },
   ranger: { hp: RANGER_HP, r: 0.5, h: 2.0 },
   tank: { hp: TANK_HP, r: 0.7, h: 2.2 },
   sniper: { hp: SNIPER_HP, r: 0.5, h: 2.1 },
+  drone: { hp: DRONE_HP, r: 0.7, h: 0.7 }, // squat flying pod
 }
 const INIT_STATE: Record<EnemyKind, string> = {
-  melee: 'chase', ranger: 'hold', tank: 'advance', sniper: 'track',
+  melee: 'chase', ranger: 'hold', tank: 'advance', sniper: 'track', drone: 'travel',
 }
 
 // ─── Spawning ────────────────────────────────────────────────────────────────
@@ -71,6 +72,7 @@ function drainSpawns(): void {
     e.data.logo = Math.floor(Math.random() * LOGO_COUNT) // random AI-lab chest emblem
     if (s.kind === 'ranger') e.data.fireT = 1.2 + Math.random() * RANGER_INTERVAL
     if (s.kind === 'sniper') e.data.cycleJitter = Math.random() * 0.6 - 0.2
+    if (s.kind === 'drone') e.data.bombT = 1.2 + Math.random() * DRONE_CYCLE * 0.6 // desync bomb cycles
     if (s.dropFrom > 0) {
       e.pos.y = s.dropFrom
     } else {
@@ -81,15 +83,17 @@ function drainSpawns(): void {
   }
 }
 
-/** Returns true on the frame the enemy touches down. */
+/** Returns true on the frame the enemy touches down (or, for drones, arrests). */
 function updateFall(e: Enemy, step: number): boolean {
   e.vel.y -= GRAVITY * step
   e.pos.y += e.vel.y * step
-  if (e.pos.y <= 0) {
-    e.pos.y = 0
+  // drones never reach the floor: their rotors catch at hover altitude
+  const arrestY = e.kind === 'drone' ? DRONE_ALTITUDE : 0
+  if (e.pos.y <= arrestY) {
+    e.pos.y = arrestY
     e.vel.y = 0
     e.falling = false
-    e.data.landT = LAND_TIME
+    if (e.kind !== 'drone') e.data.landT = LAND_TIME // no ground squash for a mid-air catch
     e.state = INIT_STATE[e.kind]
     e.stateT = e.kind === 'sniper' ? e.data.desync ?? 0 : 0
     return true
@@ -114,6 +118,9 @@ function separate(step: number): void {
       const b = sepList[j]
       let dx = b.pos.x - a.pos.x
       let dz = b.pos.z - a.pos.z
+      // fliers only shove fliers, walkers only walkers — a drone hovering 8m up
+      // must not displace the ground troops under it (or vice versa)
+      if (Math.abs(b.pos.y - a.pos.y) > 2) continue
       const d2 = dx * dx + dz * dz
       if (d2 >= SEP_RADIUS * SEP_RADIUS) continue
       let d = Math.sqrt(d2)
@@ -291,6 +298,59 @@ function poseSniper(e: Enemy, r: KindRig): void {
   }
 }
 
+/**
+ * Rotor spin + racked-bomb scale, written for EVERY drone commit (falling,
+ * alive, dying) — the rig is shared, so per-enemy values may never leak between
+ * instances. The rotor angle accumulates per enemy: its speed ramps up during
+ * the drop-in fall (the "rotors catch") and winds down to 0 while dying, which
+ * is what sells the tumble-fall.
+ */
+function poseDroneCore(e: Enemy, r: KindRig, step: number): void {
+  const dying = e.hp <= 0
+  const k = damp(e.data.rotorK ?? (e.falling ? 0.25 : 1), dying ? 0 : 1, dying ? 2.2 : 5, step)
+  e.data.rotorK = k
+  const ang = (e.data.rotorAng ?? e.id * 1.317) + step * 46 * k
+  e.data.rotorAng = ang
+  // diagonal pairs counter-rotate; slightly different rates avoid strobe-sync
+  setRot(r, 'rotor1', 0, ang, 0)
+  setRot(r, 'rotor2', 0, -ang * 0.93, 0)
+  setRot(r, 'rotor3', 0, -ang * 1.07, 0)
+  setRot(r, 'rotor4', 0, ang * 0.97, 0)
+  // release-pulse clock for poseDrone (rack flash + kick-up)
+  const dropT = Math.max(0, e.data.dropT ?? 0)
+  if (dropT > 0) e.data.dropT = dropT - step
+  // next bomb: vanishes at release, then re-racks as the cycle timer (bombT,
+  // counting down to the next drop) approaches — frozen mid-state while dying
+  const bombT = e.data.bombT ?? 0
+  const wn = r.nodes.weapon
+  if (wn) wn.scale.setScalar(Math.max(0.001, clamp01((3 - bombT) / 1.2)))
+}
+
+function poseDrone(e: Enemy): void {
+  // tilt into motion from the AI's smoothed world velocity
+  const vx = e.data.vx ?? 0
+  const vz = e.data.vz ?? 0
+  const sy = Math.sin(e.yaw)
+  const cy = Math.cos(e.yaw)
+  const fwd = vx * sy + vz * cy
+  const lat = vx * cy - vz * sy
+  RM.tiltX += Math.max(-0.38, Math.min(0.38, fwd * 0.048))
+  RM.tiltZ -= Math.max(-0.3, Math.min(0.3, lat * 0.048))
+  // visual hover bob on top of the AI's (gameplay) altitude bob
+  RM.bobY += Math.sin(world.time * 2.3 + (e.data.phase ?? 0)) * 0.035
+  const pulse = Math.max(0, e.data.dropT ?? 0) / DRONE_DROP_PULSE
+  const pp = pulse * pulse
+  if (pp > 0) {
+    RM.bobY += 0.17 * pp // kick-up as the bomb leaves the rack
+    RM.tiltX -= 0.1 * pp
+    setGlow('rack', 1 + 7 * pp) // belly/rack flash at release
+  }
+  // steady purple presence; brightens while its strike circle is live
+  const aiming = e.state === 'dropwait'
+  setGlow('trim', 1.15 + 0.25 * Math.sin(world.time * 3.1 + (e.data.phase ?? 0)) + (aiming ? 0.9 : 0))
+  setGlow('screen', aiming ? 1.7 : 1.15)
+}
+
 /** Pose the shared rig for one enemy. Returns the hit-flash value for its slot. */
 function poseBody(e: Enemy, r: KindRig, step: number, running: boolean): number {
   const g = r.group
@@ -342,6 +402,7 @@ function poseBody(e: Enemy, r: KindRig, step: number, running: boolean): number 
   setRot(r, 'weapon')
   setPos(r, 'weapon')
   if (e.kind === 'tank') poseTankShield(e, r)
+  if (e.kind === 'drone') poseDroneCore(e, r, step)
 
   if (e.falling) {
     // limbs flail on the way down — except rifle carriers, whose gripping
@@ -360,12 +421,21 @@ function poseBody(e: Enemy, r: KindRig, step: number, running: boolean): number 
     if (e.kind === 'melee') poseMelee(e, r)
     else if (e.kind === 'ranger') poseRanger(e, r, step, running)
     else if (e.kind === 'tank') poseTank(e, r, step)
+    else if (e.kind === 'drone') poseDrone(e)
     else poseSniper(e, r)
   } else {
     // collapse: tip over at the feet, arms out, sink away before removal
     const tip = easeIn(clamp01(dyingT / 0.72))
     RM.tiltX = tip * 1.5 * (e.data.deathTip ?? 1)
     RM.tiltZ = tip * (e.data.deathRoll ?? 0)
+    if (e.kind === 'drone' && e.data.impacted !== 1) {
+      // mid-air wreck: growing tumble + autorotation spin until the floor hit
+      // (stateT is held at 0 during the fall, so the generic collapse waits)
+      const ft = e.data.fallT ?? 0
+      g.rotation.y = e.yaw + ft * ft * 2.4 * (e.data.deathTip ?? 1)
+      RM.tiltX = Math.min(1.15, ft * 1.7) * (e.data.deathTip ?? 1)
+      RM.tiltZ = Math.min(0.9, ft * 1.4) * ((e.data.deathRoll ?? 0) + 0.25)
+    }
     g.position.y = e.pos.y - Math.max(0, dyingT - 0.55) * 1.1
     setRot(r, 'armL', -0.4 * tip, 0, 0.4 * tip)
     setRot(r, 'armR', -0.3 * tip, 0, -0.5 * tip)
@@ -461,8 +531,8 @@ const removeList: number[] = []
 
 // per-frame kind buckets: alive committed first so the straggler outline shells
 // cover exactly the leading instance slots (module scratch, no allocation)
-const aliveByKind: Record<EnemyKind, Enemy[]> = { melee: [], ranger: [], tank: [], sniper: [] }
-const dyingByKind: Record<EnemyKind, Enemy[]> = { melee: [], ranger: [], tank: [], sniper: [] }
+const aliveByKind: Record<EnemyKind, Enemy[]> = { melee: [], ranger: [], tank: [], sniper: [], drone: [] }
+const dyingByKind: Record<EnemyKind, Enemy[]> = { melee: [], ranger: [], tank: [], sniper: [], drone: [] }
 
 export function Enemies() {
   const rootRef = useRef<THREE.Group>(null)
@@ -499,7 +569,8 @@ export function Enemies() {
       for (const e of world.enemies.values()) {
         e.hitFlash = Math.max(0, e.hitFlash - step * 4)
         if (e.falling) {
-          if (updateFall(e, step)) dust.spawn(e.pos, e.radius * 2.4)
+          // drones arrest mid-air — no landing dust ring 8m under them
+          if (updateFall(e, step) && e.kind !== 'drone') dust.spawn(e.pos, e.radius * 2.4)
           continue
         }
         if (e.hp <= 0) {
@@ -509,6 +580,19 @@ export function Enemies() {
             e.shieldActive = false
             e.data.deathTip = Math.random() < 0.7 ? 1 : -1
             e.data.deathRoll = (Math.random() - 0.5) * 1.2
+          } else if (e.kind === 'drone' && e.data.impacted !== 1) {
+            // rotors dead: tumble-fall under gravity; the collapse/removal clock
+            // (stateT) only starts once the wreck slams into the floor
+            e.vel.y -= GRAVITY * step
+            e.pos.y += e.vel.y * step
+            e.data.fallT = (e.data.fallT ?? 0) + step
+            if (e.pos.y <= 0) {
+              e.pos.y = 0
+              e.vel.y = 0
+              e.data.impacted = 1
+              e.stateT = 0
+              dust.spawn(e.pos, e.radius * 2.6) // impact puff
+            }
           } else {
             e.stateT += step
             if (e.stateT >= DYING_TIME) removeList.push(e.id)
@@ -537,9 +621,10 @@ export function Enemies() {
           case 'ranger': aiRanger(e, step); break
           case 'tank': aiTank(e, step); break
           case 'sniper': aiSniper(e, step); break
+          case 'drone': aiDrone(e, step); break
         }
         const turn =
-          e.kind === 'melee' ? 10 : e.kind === 'tank' ? (e.state === 'windup' ? 12 : 6) : 5
+          e.kind === 'melee' ? 10 : e.kind === 'tank' ? (e.state === 'windup' ? 12 : 6) : e.kind === 'drone' ? 6 : 5
         e.yaw = lerpAngle(e.yaw, e.data.tYaw ?? e.yaw, step * turn)
       }
       separate(step)

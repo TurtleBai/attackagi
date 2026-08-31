@@ -16,6 +16,7 @@ export const SCREEN_PLACEMENT: Record<
   ranger: { x: 0, y: -0.015, z: 0.138, w: 0.28, h: 0.11, tint: 0x35d4ff }, // wide visor strip
   tank: { x: 0, y: -0.01, z: 0.178, w: 0.32, h: 0.1, tint: 0xffa728 }, // low armored slab
   sniper: { x: -0.075, y: 0, z: 0.138, w: 0.13, h: 0.17, tint: 0x38ff7a }, // beside the scope
+  drone: { x: 0, y: 0, z: 0.408, w: 0.22, h: 0.13, tint: 0xc07dff }, // nose face of the pod
 }
 
 // Procedural articulated robot bodies for the 4 enemy kinds. ONE template rig is
@@ -64,6 +65,8 @@ function bevelBox(w: number, h: number, d: number, bevel = 0.03): THREE.BufferGe
 
 const cyl = (rt: number, rb: number, h: number, seg = 10) =>
   cachedGeo(`cyl:${rt}:${rb}:${h}:${seg}`, () => new THREE.CylinderGeometry(rt, rb, h, seg))
+const torus = (r: number, tube: number, seg = 8, tseg = 18) =>
+  cachedGeo(`tor:${r}:${tube}:${seg}:${tseg}`, () => new THREE.TorusGeometry(r, tube, seg, tseg))
 const boxG = (w: number, h: number, d: number) =>
   cachedGeo(`box:${w}:${h}:${d}`, () => new THREE.BoxGeometry(w, h, d))
 const sph = (r: number, seg = 10) =>
@@ -201,7 +204,11 @@ export const KIND_TINT: Record<EnemyKind, number> = {
   ranger: 0xaec6dd, // cold blue-grey
   tank: 0xbfc4a6, // olive drab
   sniper: 0xc9b6d8, // faded violet
+  drone: 0x9f8fc4, // purple-grey gunship chassis
 }
+
+/** The drone's glow family — every emissive part of the gunship sits in this purple. */
+export const DRONE_GLOW = 0xb26bff
 
 // ─── Template construction ───────────────────────────────────────────────────
 
@@ -546,6 +553,91 @@ function buildTemplate(kind: EnemyKind): THREE.Group {
     weapon.add(muzzle)
   }
 
+  if (kind === 'drone') {
+    // squat quad-rotor bomber gunship, ~1.3m tip-to-tip — seen mostly from BELOW
+    // (it hovers at DRONE_ALTITUDE), so the belly carries the read: glowing core,
+    // belly light, under-slung bomb rack with the next bomb, purple duct rings.
+    // Only the pod + X-frame arms cast shadows; props/glow/bomb don't.
+    const podY = 0.42
+    // pod core is the 'head' node — the purple logo screen rides its nose face
+    const head = grp('head', 0, podY, 0, root)
+    head.add(meshOf(mergeParts('dronePod:c', [
+      { g: bevelBox(0.6, 0.3, 0.74, 0.05), p: [0, 0, 0] }, // chunky main pod
+      { g: bevelBox(0.46, 0.12, 0.5, 0.03), p: [0, 0.19, -0.06] }, // spine hump
+      { g: bevelBox(0.5, 0.14, 0.44, 0.035), p: [0, -0.14, -0.02] }, // belly plating
+      { g: bevelBox(0.3, 0.13, 0.2, 0.03), p: [0, 0.02, 0.42] }, // sensor prow
+      { g: bevelBox(0.16, 0.2, 0.44, 0.028), p: [0.31, 0.02, -0.04] }, // cheek sponsons
+      { g: bevelBox(0.16, 0.2, 0.44, 0.028), p: [-0.31, 0.02, -0.04] },
+    ]), chassis, 'chassis'))
+    head.add(meshOf(mergeParts('dronePod:d', [
+      { g: bevelBox(0.27, 0.18, 0.06, 0.015), p: [0, 0, 0.38] }, // screen bezel
+      { g: boxG(0.4, 0.055, 0.09), p: [0, 0.115, 0.36] }, // sensor brow housing
+      { g: boxG(0.44, 0.03, 0.06), p: [0, -0.12, 0.3] }, // chin vent
+      { g: boxG(0.34, 0.03, 0.05), p: [0, 0.05, -0.39] }, // tail vent
+      { g: cyl(0.008, 0.008, 0.3, 5), p: [-0.17, 0.3, -0.24] }, // antenna
+      { g: sph(0.05, 8), p: [0.15, 0.27, -0.2] }, // GPS dome
+    ]), dark, 'dark', false))
+    // glowing sensor strip across the brow (rides the pod so it follows death tilt)
+    const strip = glowMesh(boxG(0.34, 0.024, 0.02), DRONE_GLOW, 2.4, 'trim')
+    strip.position.set(0, 0.115, 0.415)
+    head.add(strip)
+
+    // X-frame arms to four ducted rotors + the bomb-rack rails (structural dark)
+    const frame: Part[] = []
+    const rings: Part[] = []
+    const corners: ReadonlyArray<readonly [number, number]> = [[1, 1], [-1, 1], [1, -1], [-1, -1]]
+    for (const [sx, sz] of corners) {
+      const yawA = Math.atan2(sx, sz) // diagonal the arm runs along
+      frame.push(
+        { g: bevelBox(0.1, 0.06, 0.36, 0.02), p: [sx * 0.21, 0.47, sz * 0.21], r: [0, yawA, 0] }, // arm beam
+        { g: torus(0.2, 0.032, 8, 18), p: [sx * 0.36, 0.5, sz * 0.36], r: [Math.PI / 2, 0, 0] }, // rotor duct
+        { g: cyl(0.05, 0.07, 0.11, 8), p: [sx * 0.36, 0.49, sz * 0.36] }, // motor pod
+      )
+      // engine ring on the duct underside — the purple signature seen from the ground
+      rings.push({ g: torus(0.2, 0.013, 6, 18), p: [sx * 0.36, 0.455, sz * 0.36], r: [Math.PI / 2, 0, 0] })
+    }
+    frame.push(
+      { g: boxG(0.05, 0.09, 0.42), p: [0.1, 0.2, 0] }, // bomb-rack rails
+      { g: boxG(0.05, 0.09, 0.42), p: [-0.1, 0.2, 0] },
+      { g: boxG(0.25, 0.04, 0.06), p: [0, 0.22, 0.16] }, // rack cross members
+      { g: boxG(0.25, 0.04, 0.06), p: [0, 0.22, -0.16] },
+    )
+    root.add(meshOf(mergeParts('droneFrame:d', frame), dark, 'dark'))
+    root.add(glowMesh(mergeParts('droneRings:g', rings), DRONE_GLOW, 2.2, 'trim'))
+    // belly package: nav light + exposed power core — flashes on bomb release
+    root.add(glowMesh(mergeParts('droneBelly:g', [
+      { g: cyl(0.075, 0.09, 0.035, 12), p: [0, 0.265, 0.24] }, // belly nav light
+      { g: sph(0.1, 10), p: [0, 0.26, -0.06] }, // power core orb bulging through the belly (headshot zone)
+      { g: boxG(0.02, 0.02, 0.34), p: [0.13, 0.185, 0] }, // rail glow trim
+      { g: boxG(0.02, 0.02, 0.34), p: [-0.13, 0.185, 0] },
+    ]), DRONE_GLOW, 2.6, 'rack'))
+
+    // spinning props — one articulated node per rotor (2-blade + hub + tip weights)
+    const propGeo = mergeParts('droneProp:d', [
+      { g: cyl(0.035, 0.045, 0.06, 8), p: [0, 0, 0] }, // hub
+      { g: boxG(0.37, 0.012, 0.05), p: [0, 0.01, 0], r: [0.16, 0, 0] }, // blade pair (pitched)
+      { g: boxG(0.03, 0.02, 0.055), p: [0.17, 0.01, 0] }, // tip weights
+      { g: boxG(0.03, 0.02, 0.055), p: [-0.17, 0.01, 0] },
+    ])
+    corners.forEach(([sx, sz], i) => {
+      const rot = grp(`rotor${i + 1}`, sx * 0.36, 0.535, sz * 0.36, root)
+      rot.add(meshOf(propGeo, dark, 'dark', false))
+    })
+
+    // next bomb on the rack (the 'weapon' node — scaled away at release, re-racks)
+    const weapon = grp('weapon', 0, 0.12, 0.02, root)
+    weapon.add(meshOf(mergeParts('droneBomb:d', [
+      { g: cyl(0.06, 0.06, 0.18, 8), p: [0, 0, 0] }, // body
+      { g: sph(0.06, 8), p: [0, -0.09, 0] }, // round nose (points down)
+      { g: boxG(0.015, 0.09, 0.11), p: [0, 0.1, 0] }, // tail fins
+      { g: boxG(0.11, 0.09, 0.015), p: [0, 0.1, 0] },
+    ]), dark, 'dark', false))
+    const tail = glowMesh(torus(0.05, 0.012, 6, 12), DRONE_GLOW, 2.4, 'rack')
+    tail.rotation.x = Math.PI / 2
+    tail.position.set(0, 0.09, 0)
+    weapon.add(tail)
+  }
+
   return g
 }
 
@@ -573,7 +665,10 @@ export interface KindRig {
   glowKeys: string[]
 }
 
-const NODE_NAMES = ['root', 'torso', 'head', 'armL', 'armR', 'legL', 'legR', 'weapon', 'shield', 'muzzle']
+const NODE_NAMES = [
+  'root', 'torso', 'head', 'armL', 'armR', 'legL', 'legR', 'weapon', 'shield', 'muzzle',
+  'rotor1', 'rotor2', 'rotor3', 'rotor4', // drone props (absent on other kinds)
+]
 
 const rigs = new Map<EnemyKind, KindRig>()
 

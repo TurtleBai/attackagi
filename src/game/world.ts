@@ -67,6 +67,7 @@ class World {
   pickups: Pickup[] = []
   dropRequests: DropRequest[] = [] // Director → Agi
   pendingSpawns: PendingSpawn[] = [] // Agi → Enemies
+  pendingKills = 0 // accumulated by removeEnemy; flushed to the store by the Director
 
   reset(): void {
     this.time = 0
@@ -89,6 +90,7 @@ class World {
     this.pickups.length = 0
     this.dropRequests.length = 0
     this.pendingSpawns.length = 0
+    this.pendingKills = 0
   }
 
   // ─── Damage ────────────────────────────────────────────────────────────────
@@ -105,13 +107,17 @@ class World {
     return true
   }
 
-  /** Returns true if damage was applied. Enemy modules own death (hp<=0 → removeEnemy). */
-  damageEnemy(id: number, amount: number): boolean {
+  /** Returns true if damage was applied. Enemy modules own death (hp<=0 → removeEnemy).
+   *  opts.dot marks silent damage-over-time ticks (fire): no event, no hit-flash —
+   *  per-frame emits from burning crowds were flooding the spark pool + GC. */
+  damageEnemy(id: number, amount: number, opts?: { dot?: boolean }): boolean {
     const e = this.enemies.get(id)
     if (!e || e.hp <= 0) return false
     e.hp -= amount
-    e.hitFlash = 1
-    events.emit('enemyHit', { pos: e.pos.clone(), kind: e.kind })
+    if (!opts?.dot) {
+      e.hitFlash = 1
+      events.emit('enemyHit', { pos: e.pos.clone(), kind: e.kind })
+    }
     return true
   }
 
@@ -124,8 +130,10 @@ class World {
     if (!e) return
     this.enemies.delete(id)
     events.emit('enemyDeath', { pos: e.pos.clone(), kind: e.kind })
-    const s = useGame.getState()
-    s.set({ kills: s.kills + 1 })
+    // coalesced: mass simultaneous deaths (molotov piles) were issuing one
+    // store.set + React commit per corpse in a single frame — the Director
+    // flushes pendingKills once per frame instead
+    this.pendingKills++
   }
 
   /** Damage the boss (tired window) or a lingering punch hand. Returns applied. */
@@ -351,6 +359,10 @@ class World {
     const out: Enemy[] = []
     for (const e of this.enemies.values()) {
       if (e.hp <= 0 || e.falling) continue // ground-area damage skips mid-air drops
+      // vertical gate: the check is otherwise XZ-only, so a ground-level blast
+      // (molotov) would hit drones hovering 8m overhead — and an air-burst on a
+      // drone would splash ground troops far below. Roughly spherical is enough.
+      if (Math.abs(e.pos.y - center.y) > radius + e.height) continue
       const dx = e.pos.x - center.x
       const dz = e.pos.z - center.z
       if (dx * dx + dz * dz <= (radius + e.radius) ** 2) out.push(e)
@@ -382,6 +394,7 @@ const HEADSHOT_ZONE: Record<EnemyKind, { y: number; r: number; x?: number }> = {
   ranger: { y: 1.84, r: 0.17 },
   tank: { y: 2.04, r: 0.19 },
   sniper: { y: 1.88, r: 0.14, x: -0.075 },
+  drone: { y: 0.35, r: 0.16 }, // glowing core at the center of the squat pod
 }
 
 function rayAabb(origin: THREE.Vector3, dir: THREE.Vector3, center: THREE.Vector3, half: THREE.Vector3): number | null {

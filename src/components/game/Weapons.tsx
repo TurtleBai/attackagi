@@ -28,7 +28,11 @@ const MOLO_AIM_POS = new THREE.Vector3(0.215, -0.16, -0.385)
 const MOLO_AIM_ROT = new THREE.Euler(-0.5, 0.08, 0.3)
 
 const STRIKE_AT = 0.42 // fraction of the swing when bat damage lands
+const BAT_MAX_TARGETS = 3 // a swing hits at most this many (nearest) enemies
 const HEADSHOT_MULT = 2 // revolver damage multiplier for head-zone hits
+
+// per-swing strike candidates (event-frequency; cleared each use)
+const _strike: Array<{ e: import('@/game/types').Enemy; d: number; dx: number; dz: number }> = []
 const ADS_Z = -0.26 // camera-local depth of the red dot while aiming
 const ADS_FOV = 60 // zoom while aiming (base 78)
 const THROW_ANIM = 0.42 // seconds
@@ -194,8 +198,12 @@ export function Weapons() {
     const cosHalf = Math.cos(BAT_ARC / 2)
     const kb = 4 + 8 * charge
     let connected = false
+    // collect everything in the arc, then hit only the BAT_MAX_TARGETS nearest —
+    // a swing is a focused hit, not an area wipe
+    _strike.length = 0
     for (const e of world.enemies.values()) {
       if (e.hp <= 0 || e.falling) continue
+      if (e.pos.y - world.player.pos.y > 2.5) continue // hovering drones are out of bat reach
       const dx = e.pos.x - world.player.pos.x
       const dz = e.pos.z - world.player.pos.z
       const d = Math.hypot(dx, dz)
@@ -205,11 +213,19 @@ export function Weapons() {
       _chest.copy(e.pos)
       _chest.y += e.height * 0.55
       if (world.segmentBlocked(_eye, _chest)) continue
+      _strike.push({ e, d, dx, dz })
+    }
+    _strike.sort((a, b) => a.d - b.d)
+    const nHits = Math.min(BAT_MAX_TARGETS, _strike.length)
+    for (let i = 0; i < nHits; i++) {
+      const { e, d, dx, dz } = _strike[i]
       world.damageEnemy(e.id, dmg)
       connected = true
       const inv = 1 / Math.max(d, 1e-4)
       e.vel.x += dx * inv * kb
       e.vel.z += dz * inv * kb
+      _chest.copy(e.pos)
+      _chest.y += e.height * 0.55
       events.emit('batHit', { pos: _chest.clone(), charged: charge })
     }
     // giant boss hands (punch linger + tired rest): proximity strike — the

@@ -25,7 +25,7 @@ function computeStats(buffs: OwnedBuffs): PlayerStats {
     molotovCapacity: MOLOTOV_CAPACITY + n('arsonist'),
     molotovRadius: MOLOTOV_RADIUS * (1 + 0.35 * n('biggerSplash')),
     fireDpsMult: 1 + 0.3 * n('arsonist'),
-    healOnWaveClear: 0.4 * n('fieldMedic'),
+    healOnWaveClear: 0.1 * n('fieldMedic'),
   }
 }
 

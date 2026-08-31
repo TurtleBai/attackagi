@@ -2,6 +2,8 @@
 import * as THREE from 'three'
 import {
   ARENA_RADIUS,
+  DRONE_ALTITUDE, DRONE_BOMB_DAMAGE, DRONE_BOMB_RADIUS, DRONE_BOMB_TELEGRAPH,
+  DRONE_CYCLE, DRONE_SPEED, GRAVITY,
   MELEE_DAMAGE, MELEE_RANGE, MELEE_SPEED, MELEE_SWING_TIME,
   PLAYER_RADIUS,
   RANGER_BOLT_SPEED, RANGER_DAMAGE, RANGER_INTERVAL,
@@ -282,6 +284,143 @@ export function aiTank(e: Enemy, step: number): void {
       e.state = 'advance'
       e.stateT = 0
   }
+}
+
+// ─── Drone: travel → hover above target → circle telegraph + bomb drop ───────
+
+/** Seconds the drone lingers over the target after release (watching the boom). */
+export const DRONE_LINGER = 0.4
+/** Re-pick the bombing point when the player has run this far from it. */
+const DRONE_STALE_DIST = 14
+/** Pose pulse length after a bomb release (rack flash + kick-up), read by poseDrone. */
+export const DRONE_DROP_PULSE = 0.9
+
+/** Bombing point biased near the player: random offset 4–9m, clamped to the arena. */
+function pickBombTarget(e: Enemy): void {
+  const p = world.player
+  const a = Math.random() * Math.PI * 2
+  const r = 4 + Math.random() * 5
+  let x = p.pos.x + Math.sin(a) * r
+  let z = p.pos.z + Math.cos(a) * r
+  const d = Math.hypot(x, z)
+  const max = ARENA_RADIUS - 2.5
+  if (d > max) {
+    x = (x / d) * max
+    z = (z / d) * max
+  }
+  e.data.bombX = x
+  e.data.bombZ = z
+  e.data.hasTarget = 1
+}
+
+export function aiDrone(e: Enemy, step: number): void {
+  const p = world.player
+  e.stateT += step
+  e.data.bombT = (e.data.bombT ?? DRONE_CYCLE) - step
+  if (e.data.hasTarget !== 1) pickBombTarget(e)
+
+  // vertical: hold altitude with a gentle bob — the GAMEPLAY y really bobs, so
+  // raycasts/collision see the same motion the eye does. Also lifts ground-level
+  // spawns (dropFrom 0) smoothly up to cruise height.
+  const wantY = DRONE_ALTITUDE + Math.sin(world.time * 1.7 + (e.data.phase ?? 0)) * 0.28
+  e.pos.y += (wantY - e.pos.y) * Math.min(1, 3 * step)
+
+  const tx = e.data.bombX ?? 0
+  const tz = e.data.bombZ ?? 0
+  const dx = tx - e.pos.x
+  const dz = tz - e.pos.z
+  const dist = Math.hypot(dx, dz)
+
+  // smoothed world-velocity (for pose tilt-into-motion); decays while hovering
+  let mvx = 0
+  let mvz = 0
+
+  switch (e.state) {
+    case 'travel': {
+      // the player ran off — the picked point no longer threatens; chase closer
+      const pdx = tx - p.pos.x
+      const pdz = tz - p.pos.z
+      if (pdx * pdx + pdz * pdz > DRONE_STALE_DIST * DRONE_STALE_DIST) pickBombTarget(e)
+      const spd = DRONE_SPEED * Math.min(1, 0.3 + dist / 3) // ease in on arrival
+      if (dist > 1e-4) {
+        mvx = (dx / dist) * spd
+        mvz = (dz / dist) * spd
+        e.pos.x += mvx * step
+        e.pos.z += mvz * step
+      }
+      e.data.speed = spd
+      e.data.tYaw = dist > 1.2
+        ? Math.atan2(dx, dz)
+        : Math.atan2(p.pos.x - e.pos.x, p.pos.z - e.pos.z)
+      if (dist < 0.7) {
+        e.state = 'hover'
+        e.stateT = 0
+        e.data.speed = 0
+      }
+      break
+    }
+    case 'hover': {
+      // pinned directly above the target; face the player while waiting
+      const ck = Math.min(1, 4 * step)
+      e.pos.x += dx * ck
+      e.pos.z += dz * ck
+      mvx = (dx * ck) / Math.max(step, 1e-4)
+      mvz = (dz * ck) / Math.max(step, 1e-4)
+      e.data.speed = 0
+      e.data.tYaw = Math.atan2(p.pos.x - e.pos.x, p.pos.z - e.pos.z)
+      const pdx = tx - p.pos.x
+      const pdz = tz - p.pos.z
+      if (pdx * pdx + pdz * pdz > DRONE_STALE_DIST * DRONE_STALE_DIST) {
+        // target went stale while waiting for the cycle — reposition first
+        pickBombTarget(e)
+        e.state = 'travel'
+        e.stateT = 0
+        break
+      }
+      if (e.data.bombT <= 0) {
+        // glowing red circle on the floor; damage resolves centrally at tHit
+        _t.set(tx, 0, tz)
+        world.addTelegraph({
+          shape: 'circle', pos: _t, radius: DRONE_BOMB_RADIUS, duration: DRONE_BOMB_TELEGRAPH,
+          payload: { damage: DRONE_BOMB_DAMAGE, explosion: true, tag: 'rocket' },
+        })
+        // visual bomb from the rack, gravity-timed to land exactly at tHit
+        // (same trick as the boss rocket barrage: kind 'rocket', damage 0)
+        _m.set(e.pos.x, e.pos.y - 0.35, e.pos.z)
+        const h = Math.max(1, _m.y)
+        const v0 = 0.6 // small initial push so the streak orients nose-down at once
+        const gs = (2 * (h - v0 * DRONE_BOMB_TELEGRAPH)) / (GRAVITY * DRONE_BOMB_TELEGRAPH * DRONE_BOMB_TELEGRAPH)
+        world.addProjectile({
+          kind: 'rocket', pos: _m, vel: _d2.set(0, -v0, 0),
+          radius: 0.3, damage: 0, ttl: DRONE_BOMB_TELEGRAPH + 0.3, gravityScale: Math.max(0, gs),
+        })
+        e.data.dropT = DRONE_DROP_PULSE
+        e.data.bombT = DRONE_CYCLE * (0.9 + Math.random() * 0.2)
+        e.state = 'dropwait'
+        e.stateT = 0
+      }
+      break
+    }
+    case 'dropwait': {
+      // linger over the strike, then drift off to the next point
+      e.data.speed = 0
+      e.data.tYaw = Math.atan2(p.pos.x - e.pos.x, p.pos.z - e.pos.z)
+      if (e.stateT >= DRONE_BOMB_TELEGRAPH + DRONE_LINGER) {
+        pickBombTarget(e)
+        e.state = 'travel'
+        e.stateT = 0
+      }
+      break
+    }
+    default:
+      e.state = 'travel'
+      e.stateT = 0
+  }
+
+  // damp the pose-tilt velocity toward this frame's actual motion
+  const k = Math.min(1, 6 * step)
+  e.data.vx = (e.data.vx ?? 0) + (mvx - (e.data.vx ?? 0)) * k
+  e.data.vz = (e.data.vz ?? 0) + (mvz - (e.data.vz ?? 0)) * k
 }
 
 // ─── Sniper: track (live laser sight) → aim lock (rect telegraph) → beam ─────

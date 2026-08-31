@@ -85,16 +85,24 @@ export const SNIPER_DAMAGE = 26
 export const SNIPER_INTERVAL = 5.0
 export const SNIPER_AIM_TIME = 1.4 // red line telegraph duration
 
+export const DRONE_HP = 22
+export const DRONE_BOMB_DAMAGE = 22
+export const DRONE_SPEED = 7 // flying (m/s)
+export const DRONE_ALTITUDE = 8 // hover height; drop-in falls arrest here (rotors catch)
+export const DRONE_CYCLE = 4.5 // seconds between bomb drops (desynced per drone)
+export const DRONE_BOMB_RADIUS = 2.8 // red circle telegraph radius
+export const DRONE_BOMB_TELEGRAPH = 1.5 // telegraph duration = bomb fall time
+
 /** When this many (or fewer) enemies remain in a wave, stragglers get a glowing outline. */
 export const STRAGGLER_OUTLINE_COUNT = 5
 
-// ─── Waves: [melee, ranger, tank, sniper] ────────────────────────────────────
-export const WAVES: ReadonlyArray<readonly [number, number, number, number]> = [
-  [20, 10, 0, 0],
-  [20, 10, 5, 0],
-  [20, 10, 10, 5],
-  [20, 10, 20, 10],
-  [10, 20, 20, 10],
+// ─── Waves: [melee, ranger, tank, sniper, drone] ─────────────────────────────
+export const WAVES: ReadonlyArray<readonly [number, number, number, number, number]> = [
+  [20, 10, 0, 0, 5],
+  [20, 10, 5, 0, 10],
+  [20, 10, 10, 5, 15],
+  [20, 10, 20, 10, 15],
+  [10, 20, 20, 10, 15],
 ]
 export const DROP_BATCH = 5 // enemies per AGI hand drop
 export const DROP_INTERVAL = 4.0 // seconds between drop requests while under cap
@@ -152,5 +160,5 @@ export const BUFFS: Record<BuffId, BuffDef> = {
   fleetFooted: { id: 'fleetFooted', name: 'Fleet Footed', desc: '+12% move speed', icon: '👟' },
   phantomStep: { id: 'phantomStep', name: 'Phantom Step', desc: 'Dodge cooldown −0.6s', icon: '👻' },
   plating: { id: 'plating', name: 'Reinforced Plating', desc: '+25 max HP and heal 25', icon: '🛡️' },
-  fieldMedic: { id: 'fieldMedic', name: 'Field Medic', desc: 'Heal 40% of max HP after each wave', icon: '💉' },
+  fieldMedic: { id: 'fieldMedic', name: 'Field Medic', desc: 'Heal 10% of max HP after each wave', icon: '💉' },
 }

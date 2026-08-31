@@ -598,10 +598,11 @@ function tickHazards(step: number): void {
         // enemiesInCircle's per-frame array allocation in this hot loop)
         for (const e of world.enemies.values()) {
           if (e.hp <= 0 || e.falling) continue // ground fire can't cook mid-air drops
+          if (Math.abs(e.pos.y - pos.y) > radius + e.height) continue // …or hovering drones
           const dx = e.pos.x - pos.x
           const dz = e.pos.z - pos.z
           const rr = radius + e.radius
-          if (dx * dx + dz * dz <= rr * rr) world.damageEnemy(e.id, h.dps * step)
+          if (dx * dx + dz * dz <= rr * rr) world.damageEnemy(e.id, h.dps * step, { dot: true })
         }
       } else if (world.playerInCircle(pos, radius)) {
         world.damagePlayer(h.dps * step)

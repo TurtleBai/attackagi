@@ -30,7 +30,7 @@ const CRATE_R_MAX = ARENA_RADIUS - 5
 const CRATE_PLAYER_DIST = 6
 const CRATE_SPACING = 5 // keep crates apart from each other
 
-const KIND_ORDER: readonly EnemyKind[] = ['melee', 'ranger', 'tank', 'sniper']
+const KIND_ORDER: readonly EnemyKind[] = ['melee', 'ranger', 'tank', 'sniper', 'drone']
 
 interface DirectorLocal {
   startedWave: number // wave number whose start we've processed (0 = none)
@@ -114,9 +114,9 @@ function sampleBatchCenter(out: THREE.Vector3): THREE.Vector3 {
   return out // arena is big enough that this is effectively unreachable
 }
 
-function buildBag(quota: readonly [number, number, number, number]): EnemyKind[] {
+function buildBag(quota: readonly number[]): EnemyKind[] {
   const bag: EnemyKind[] = []
-  for (let i = 0; i < 4; i++) {
+  for (let i = 0; i < KIND_ORDER.length; i++) {
     for (let k = 0; k < quota[i]; k++) bag.push(KIND_ORDER[i])
   }
   for (let i = bag.length - 1; i > 0; i--) {
@@ -179,7 +179,7 @@ export function Director() {
   function startWave(n: number): void {
     const local = localRef.current
     const quota = WAVES[Math.min(Math.max(n, 1), WAVES.length) - 1]
-    const total = quota[0] + quota[1] + quota[2] + quota[3]
+    const total = quota[0] + quota[1] + quota[2] + quota[3] + quota[4]
     local.startedWave = n
     local.bag = buildBag(quota)
     local.dropTimer = 0 // first drop request fires on the next director frame
@@ -237,7 +237,13 @@ export function Director() {
     const truth =
       world.enemies.size + world.pendingSpawns.length + inFlightSpawns() + localRef.current.bag.length
     const s = useGame.getState()
-    if (s.enemiesRemaining !== truth) s.set({ enemiesRemaining: truth })
+    if (world.pendingKills > 0) {
+      // one store commit per frame no matter how many corpses landed together
+      s.set({ enemiesRemaining: truth, kills: s.kills + world.pendingKills })
+      world.pendingKills = 0
+    } else if (s.enemiesRemaining !== truth) {
+      s.set({ enemiesRemaining: truth })
+    }
     return truth
   }
 

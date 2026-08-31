@@ -15,12 +15,12 @@ First-person camera at eye height `PLAYER_EYE`. Fast base walk speed `PLAYER_SPE
 ## Weapons (keys 1/2/3 to select)
 
 1. **Revolver** (key 1): full-auto hitscan — fires while left mouse is held (cadence `PISTOL_FIRE_INTERVAL`, deliberately slower than a sidearm but hits hard). Cylinder `PISTOL_MAG` = 6, must reload (R or auto on empty, `PISTOL_RELOAD` s — swing-out cylinder animation) every 6 shots. Starts with 6 in the cylinder + `PISTOL_RESERVE_START` = 90 reserve. Damage `PISTOL_DAMAGE` = 20; **headshots** (the ray must pass through the enemy's glowing head-display sphere — `HEADSHOT_ZONE` in world.ts, `raycastShot.headshot`) deal **2×** and flash a red hit marker (body hits flash white). Ammo crates refill the **entire reserve**. Fitted with a **red dot sight** (no irons): hold **RMB to aim** — the view model centers so the dot sits on the camera axis, FOV zooms 78→`ADS_FOV` 60, sway damps 85%, recoil 45% tamer, and the HUD crosshair hides. Reloading or switching drops back to hip.
-2. **Baseball bat** (key 2): melee, left-click swings (`BAT_DAMAGE`, range `BAT_RANGE`, arc `BAT_ARC`). **Holding** left mouse charges the swing — reaching full charge takes `BAT_CHARGE_TIME` = 2.5s; the bat **flashes when max charged**; a max-charged swing does **3×** damage (`BAT_CHARGED_MULT`). Partial charge scales linearly between 1× and 3×.
+2. **Baseball bat** (key 2): melee, left-click swings (`BAT_DAMAGE`, range `BAT_RANGE`, arc `BAT_ARC`) — hits at most the **3 nearest** targets in the arc per swing (`BAT_MAX_TARGETS` in Weapons.tsx; a focused hit, not an area wipe) and can't reach flyers more than ~2.5m overhead. **Holding** left mouse charges the swing — reaching full charge takes `BAT_CHARGE_TIME` = 2.5s; the bat **flashes when max charged**; a max-charged swing does **3×** damage (`BAT_CHARGED_MULT`). Partial charge scales linearly between 1× and 3×.
 3. **Molotov cocktail** (key 3): right-click aims — show the arc trajectory line silhouette + landing area disc. Left-click (while aiming) throws: ballistic arc, explodes on impact (`MOLOTOV_DAMAGE`, radius `MOLOTOV_RADIUS`) and ignites a ground fire patch lasting `FIRE_DURATION` doing `FIRE_DPS` damage/s. Starts with `MOLOTOV_START` = 2 bottles; an ammo crate gives `MOLOTOV_PER_CRATE` = 2 more (up to capacity).
 
 **Ammo crates**: spawned by the Director during waves (`CRATE_INTERVAL`, max `CRATE_MAX` alive). Walk over to collect: refills full pistol reserve + 2 molotovs.
 
-## Enemies (4 kinds, all robots, dropped onto the arena by the AGI's hands)
+## Enemies (5 kinds, all robots, dropped onto the arena by the AGI's hands)
 
 | kind | behavior | HP | damage |
 |---|---|---|---|
@@ -28,18 +28,19 @@ First-person camera at eye height `PLAYER_EYE`. Fast base walk speed `PLAYER_SPE
 | **ranger** | stands still, shoots slow dodgeable laser bolts (`RANGER_BOLT_SPEED`) every `RANGER_INTERVAL` | `RANGER_HP` (lower than melee) | `RANGER_DAMAGE` |
 | **tank** | melee-bot with a **shield**, no sword. Walks at player; near range stops, telegraphs for `TANK_WINDUP` = 1.5s with a **red rectangle floor indicator** along its dash path, then shield-bashes (dash `TANK_BASH_SPEED`, `TANK_DAMAGE`). Shield **blocks player bullets** from the front (~`TANK_SHIELD_ARC`). HP = melee's. | `TANK_HP` | `TANK_DAMAGE` |
 | **sniper** | robot with a sniper rifle + lens over one eye. Every `SNIPER_INTERVAL` = 5s: telegraphs a **red floor line indicator** where its beam will go (`SNIPER_AIM_TIME`), then fires an instant laser beam. HP = ranger's. | `SNIPER_HP` | `SNIPER_DAMAGE` |
+| **drone** | purple-glowing quad-rotor bomber gunship, **flying** (`DRONE_SPEED`): its AGI-hand drop arrests mid-air at `DRONE_ALTITUDE` (~8m) instead of the ground. Picks a bombing point biased near the player (random 4–9m offset), flies there, hovers directly above it, telegraphs a **red circle floor indicator** (`DRONE_BOMB_RADIUS`, `DRONE_BOMB_TELEGRAPH`) and drops a bomb timed to land at the telegraph's resolve, then drifts to a new point — one bomb every `DRONE_CYCLE` (~4.5s, desynced per drone); repositions first if the player has run off. Out of bat reach; on death its rotors stop and it tumble-falls to the floor. HP = ranger's. | `DRONE_HP` | `DRONE_BOMB_DAMAGE` |
 
 **Terrain favors the player**: obstacles block shield bashes, sniper/boss laser beams, and ranger bolts (line-of-sight checks via `world.segmentBlocked`).
 
 ## Waves (`WAVES` table)
 
-| wave | melee | ranger | tank | sniper |
-|---|---|---|---|---|
-| 1 | 20 | 10 | – | – |
-| 2 | 20 | 10 | 5 | – |
-| 3 | 20 | 10 | 10 | 5 |
-| 4 | 20 | 10 | 20 | 10 |
-| 5 | 10 | 20 | 20 | 10 |
+| wave | melee | ranger | tank | sniper | drone |
+|---|---|---|---|---|---|
+| 1 | 20 | 10 | – | – | 5 |
+| 2 | 20 | 10 | 5 | – | 10 |
+| 3 | 20 | 10 | 10 | 5 | 15 |
+| 4 | 20 | 10 | 20 | 10 | 15 |
+| 5 | 10 | 20 | 20 | 10 | 15 |
 
 Enemies are drip-fed: the Director pushes drop requests (`world.dropRequests`); the AGI grabs a cluster in a hand, reaches down, and releases them (→ `world.pendingSpawns`, consumed by Enemies). Keep concurrent enemies ≤ `MAX_CONCURRENT_ENEMIES`.
 
