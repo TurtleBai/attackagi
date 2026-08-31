@@ -608,8 +608,10 @@ function tickHazards(step: number): void {
       const radius = h.radius ?? 0
       if (!pos) continue
       if (h.playerFire) {
-        // player-owned fire cooks enemies only (inline circle test — avoids
-        // enemiesInCircle's per-frame array allocation in this hot loop)
+        // molotov flames are friendly-fire: standing in your own puddle burns
+        if (world.playerInCircle(pos, radius)) world.damagePlayer(h.dps * step)
+        // …and cooks enemies (inline circle test — avoids enemiesInCircle's
+        // per-frame array allocation in this hot loop)
         for (const e of world.enemies.values()) {
           if (e.hp <= 0 || e.falling) continue // ground fire can't cook mid-air drops
           if (Math.abs(e.pos.y - pos.y) > radius + e.height) continue // …or hovering drones

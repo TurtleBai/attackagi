@@ -259,7 +259,33 @@ class World {
 
     for (const e of this.enemies.values()) {
       if (e.hp <= 0 || e.falling) continue
-      const t = rayCylinder(origin, dir, e.pos, e.radius, e.height)
+      // head-display sphere is raycast independently of the body cylinder —
+      // the drone's nose head protrudes past its hull radius
+      const hz = HEADSHOT_ZONE[e.kind]
+      _v1.set(e.pos.x, e.pos.y + hz.y, e.pos.z)
+      if (hz.x) {
+        // sniper's screen sits beside the scope — offset along its local right
+        _v1.x += Math.cos(e.yaw) * hz.x
+        _v1.z += -Math.sin(e.yaw) * hz.x
+      }
+      if (hz.z) {
+        let fy = hz.y
+        let fz = hz.z
+        if (e.kind === 'drone') {
+          // mirror poseDrone's velocity lean so the sphere tracks the visible
+          // head while the drone pitches nose-down into its attack run
+          const fwd = (e.data.vx ?? 0) * Math.sin(e.yaw) + (e.data.vz ?? 0) * Math.cos(e.yaw)
+          const tilt = THREE.MathUtils.clamp(fwd * 0.048, -0.38, 0.38)
+          fy = hz.y * Math.cos(tilt) - hz.z * Math.sin(tilt)
+          fz = hz.y * Math.sin(tilt) + hz.z * Math.cos(tilt)
+        }
+        _v1.y = e.pos.y + fy
+        _v1.x += Math.sin(e.yaw) * fz
+        _v1.z += Math.cos(e.yaw) * fz
+      }
+      const headT = raySphere(origin, dir, _v1, hz.r)
+      const bodyT = rayCylinder(origin, dir, e.pos, e.radius, e.height)
+      const t = bodyT === null ? headT : headT === null ? bodyT : Math.min(bodyT, headT)
       if (t === null || t < 0 || t >= bestDist) continue
       const point = origin.clone().addScaledVector(dir, t)
       if (e.kind === 'tank' && e.shieldActive) {
@@ -276,14 +302,6 @@ class World {
       bestDist = t
       // headshot = the ray actually passes through the glowing head-display
       // unit (tight per-kind sphere), not merely the top of the body cylinder
-      const hz = HEADSHOT_ZONE[e.kind]
-      _v1.set(e.pos.x, e.pos.y + hz.y, e.pos.z)
-      if (hz.x) {
-        // sniper's screen sits beside the scope — offset along its local right
-        _v1.x += Math.cos(e.yaw) * hz.x
-        _v1.z += -Math.sin(e.yaw) * hz.x
-      }
-      const headT = raySphere(origin, dir, _v1, hz.r)
       result = {
         kind: 'enemy', enemy: e, dist: t, point,
         headshot: headT !== null && headT <= t + 1.2,
@@ -387,14 +405,14 @@ const _v1 = new THREE.Vector3()
 const _v2 = new THREE.Vector3()
 
 // Head-display hit spheres (feet-relative center height, radius, optional
-// facing-local x offset). Sized to the glowing screen unit + casing so a
-// headshot demands actual aim at the logo, not the upper chest.
-const HEADSHOT_ZONE: Record<EnemyKind, { y: number; r: number; x?: number }> = {
+// facing-local x and forward z offsets). Sized to the glowing screen unit +
+// casing so a headshot demands actual aim at the logo, not the upper chest.
+const HEADSHOT_ZONE: Record<EnemyKind, { y: number; r: number; x?: number; z?: number }> = {
   melee: { y: 2.02, r: 0.18 },
   ranger: { y: 1.84, r: 0.17 },
   tank: { y: 2.04, r: 0.19 },
   sniper: { y: 1.88, r: 0.14, x: -0.075 },
-  drone: { y: 0.78, r: 0.15 }, // the little sensor head atop the pod
+  drone: { y: 0.3, r: 0.18, z: 0.6 }, // probe head thrust ahead of the nose
 }
 
 function rayAabb(origin: THREE.Vector3, dir: THREE.Vector3, center: THREE.Vector3, half: THREE.Vector3): number | null {
@@ -425,29 +443,41 @@ function raySphere(origin: THREE.Vector3, dir: THREE.Vector3, center: THREE.Vect
   return t >= 0 ? t : (-b + Math.sqrt(disc) >= 0 ? Math.max(0, -b + Math.sqrt(disc)) : null)
 }
 
-/** Ray vs vertical cylinder (feet at base.y, given radius/height). */
+/** Ray vs vertical CAPPED cylinder (feet at base.y, given radius/height).
+ *  The end caps must be tested too: a steep shot from under a hovering drone
+ *  crosses the infinite cylinder's side wall entirely outside the height band
+ *  and phases through unless the belly/top discs count. */
 function rayCylinder(origin: THREE.Vector3, dir: THREE.Vector3, base: THREE.Vector3, radius: number, height: number): number | null {
   const ox = origin.x - base.x, oz = origin.z - base.z
+  const y0 = base.y, y1 = base.y + height
+  const r2 = radius * radius
+  let best: number | null = null
   const a = dir.x * dir.x + dir.z * dir.z
-  if (a < 1e-9) {
-    // vertical ray
-    if (ox * ox + oz * oz > radius * radius) return null
-    const t1 = (base.y - origin.y) / dir.y
-    const t2 = (base.y + height - origin.y) / dir.y
-    const t = Math.min(t1, t2) >= 0 ? Math.min(t1, t2) : Math.max(t1, t2)
-    return t >= 0 ? t : null
+  if (a > 1e-9) {
+    const b = ox * dir.x + oz * dir.z
+    const c = ox * ox + oz * oz - r2
+    const disc = b * b - a * c
+    if (disc >= 0) {
+      const sq = Math.sqrt(disc)
+      const tNear = (-b - sq) / a
+      const tFar = (-b + sq) / a
+      for (let i = 0; i < 2; i++) {
+        const t = i === 0 ? tNear : tFar
+        if (t < 0 || (best !== null && t >= best)) continue
+        const y = origin.y + dir.y * t
+        if (y >= y0 && y <= y1) best = t
+      }
+    }
   }
-  const b = ox * dir.x + oz * dir.z
-  const c = ox * ox + oz * oz - radius * radius
-  const disc = b * b - a * c
-  if (disc < 0) return null
-  const sq = Math.sqrt(disc)
-  let t = (-b - sq) / a
-  if (t < 0) t = (-b + sq) / a
-  if (t < 0) return null
-  const y = origin.y + dir.y * t
-  if (y < base.y || y > base.y + height) return null
-  return t
+  if (Math.abs(dir.y) > 1e-9) {
+    for (let i = 0; i < 2; i++) {
+      const t = ((i === 0 ? y0 : y1) - origin.y) / dir.y
+      if (t < 0 || (best !== null && t >= best)) continue
+      const x = ox + dir.x * t, z = oz + dir.z * t
+      if (x * x + z * z <= r2) best = t
+    }
+  }
+  return best
 }
 
 export const world = new World()

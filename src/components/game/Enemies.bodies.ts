@@ -594,16 +594,17 @@ function buildTemplate(kind: EnemyKind): THREE.Group {
     strip.position.set(0, 0.115, 0.415)
     head.add(strip)
 
-    // the little HEAD on top — the headshot target (HEADSHOT_ZONE.drone at
-    // e.pos.y + 0.78 ≈ pod node 0.42 + local 0.36): neck stalk + beveled head
-    // cube with a bright visor slit so it reads as "shoot me" from the ground
+    // the little HEAD out FRONT — the headshot target (HEADSHOT_ZONE.drone,
+    // yaw-forward offset; world.ts mirrors the dive tilt): a probe head on a
+    // chin boom thrust ahead of the nose, so it faces the player dead-on
+    // during attack runs and stays clear of the logo screen above it
     head.add(meshOf(mergeParts('droneHead:c', [
-      { g: cyl(0.035, 0.048, 0.09, 8), p: [0, 0.27, 0.08] }, // neck stalk
-      { g: bevelBox(0.16, 0.14, 0.16, 0.022), p: [0, 0.36, 0.08] }, // the head
-      { g: boxG(0.05, 0.02, 0.04), p: [0, 0.445, 0.08] }, // topknot sensor
+      { g: cyl(0.035, 0.048, 0.16, 8), p: [0, -0.07, 0.46], r: [Math.PI / 2, 0, 0] }, // neck boom
+      { g: bevelBox(0.2, 0.17, 0.16, 0.025), p: [0, -0.12, 0.6] }, // the head
+      { g: boxG(0.05, 0.04, 0.02), p: [0, -0.015, 0.6] }, // topknot sensor
     ]), chassis, 'chassis', true, true))
-    const headVisor = glowMesh(boxG(0.12, 0.032, 0.02), DRONE_GLOW, 2.8, 'trim')
-    headVisor.position.set(0, 0.365, 0.168)
+    const headVisor = glowMesh(boxG(0.15, 0.045, 0.02), DRONE_GLOW, 2.8, 'trim')
+    headVisor.position.set(0, -0.105, 0.685)
     head.add(headVisor)
 
     // X-frame arms to four ducted rotors + the bomb-rack rails (structural dark)

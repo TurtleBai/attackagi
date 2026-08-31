@@ -35,7 +35,7 @@ const KIND_DEF: Record<EnemyKind, { hp: number; r: number; h: number }> = {
   ranger: { hp: RANGER_HP, r: 0.5, h: 2.0 },
   tank: { hp: TANK_HP, r: 0.7, h: 2.2 },
   sniper: { hp: SNIPER_HP, r: 0.5, h: 2.1 },
-  drone: { hp: DRONE_HP, r: 0.7, h: 0.95 }, // squat flying pod + the little top head
+  drone: { hp: DRONE_HP, r: 0.7, h: 0.95 }, // squat flying pod; nose head raycast separately
 }
 const INIT_STATE: Record<EnemyKind, string> = {
   melee: 'chase', ranger: 'hold', tank: 'advance', sniper: 'track', drone: 'rest',
