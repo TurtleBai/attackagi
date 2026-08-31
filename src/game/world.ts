@@ -115,14 +115,17 @@ class World {
     return true
   }
 
-  /** Call after death animation; emits enemyDeath + decrements wave counter. */
+  /** Call after death animation; emits enemyDeath + counts the kill. The wave's
+   *  enemiesRemaining is NOT decremented here — the Director derives it from
+   *  ground truth every frame (decrement bookkeeping proved corruptible: any
+   *  drift compounded through the drip-feed cap into runaway wave cascades). */
   removeEnemy(id: number): void {
     const e = this.enemies.get(id)
     if (!e) return
     this.enemies.delete(id)
     events.emit('enemyDeath', { pos: e.pos.clone(), kind: e.kind })
     const s = useGame.getState()
-    s.set({ enemiesRemaining: Math.max(0, s.enemiesRemaining - 1), kills: s.kills + 1 })
+    s.set({ kills: s.kills + 1 })
   }
 
   /** Damage the boss (tired window) or a lingering punch hand. Returns applied. */

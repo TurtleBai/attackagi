@@ -1066,6 +1066,8 @@ function updateVisuals(S: Local, rig: AgiRig, t: number, step: number): void {
     world.agi.mode === 'tired' ? 0.45
     : world.agi.mode === 'dying' ? 0.5 + Math.random() * 0.7
     : world.agi.mode === 'dead' ? 0 : 1
+  // eldritch tentacle mass: mood-coupled undulation + player-tracking eyes
+  rig.tentacles.update(t, world.agi.mode, S.dying ? S.dying.t : -1, world.player.pos, world.agi.headPos)
   // spark clusters on grounded hands (one instanced draw each; hidden bits use scale 0)
   for (let i = 0; i < 2; i++) {
     const sp = rig.sparks[i]
@@ -1179,6 +1181,7 @@ function resetLocal(S: Local, rig: AgiRig): void {
   }
   rig.model.visible = true
   rig.model.position.set(0, 0, 0)
+  rig.tentacles.reset()
   rig.debris.group.visible = false
   rig.beam.group.visible = false
   rig.beam.impact.visible = false

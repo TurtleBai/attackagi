@@ -3,6 +3,7 @@ import * as THREE from 'three'
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
 import { bossHullMaterial, darkMetalMaterial, emissiveMaterial, glowMetal } from '@/game/gfx/materials'
 import { seededRandom } from '@/game/gfx/textures'
+import { buildTentacles, type TentaclesRig } from './Agi.tentacles'
 
 // ─── AGI model construction ──────────────────────────────────────────────────
 // Builds the whole boss once: chamfered monitor head + CRT screen, greebled
@@ -220,6 +221,8 @@ export interface AgiRig {
   sparks: { group: THREE.Group; inst: THREE.InstancedMesh }[]
   beam: { group: THREE.Group; core: THREE.Mesh; sheath: THREE.Mesh; sheathMat: THREE.ShaderMaterial; impact: THREE.Mesh; impactMat: THREE.MeshBasicMaterial }
   debris: { group: THREE.Group; chunks: THREE.Mesh[] }
+  /** eldritch tentacle mass behind the torso (2 draws; driven from Agi.tsx) */
+  tentacles: TentaclesRig
 }
 
 // ─── build ───────────────────────────────────────────────────────────────────
@@ -364,6 +367,11 @@ export function buildAgiRig(screenMaterial: THREE.ShaderMaterial): AgiRig {
     bodyGreebles.receiveShadow = true
     bob.add(bodyGreebles)
   }
+
+  // eldritch tentacle mass sprouting from behind the torso/shoulder block —
+  // child of `bob` so it inherits the hover bob and hides with the model
+  const tentacles = buildTentacles()
+  bob.add(tentacles.group)
 
   // reactor core: additive shader disc (housing merged into the body mesh above)
   const reactorMat = new THREE.ShaderMaterial({
@@ -708,5 +716,6 @@ export function buildAgiRig(screenMaterial: THREE.ShaderMaterial): AgiRig {
     sparks,
     beam: { group: beamGroup, core: beamCore, sheath: beamSheath, sheathMat, impact: beamImpact, impactMat },
     debris: { group: debrisGroup, chunks },
+    tentacles,
   }
 }

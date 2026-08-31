@@ -25,7 +25,6 @@ const SPAWN_PLAYER_DIST = 10 // never drop enemies closer than this to the playe
 const CLUSTER_RADIUS = 4 // batch members land within ~this of the batch center
 const OBSTACLE_MARGIN = 1 // nudge spawns this far clear of obstacle AABBs
 const CAP_RETRY_INTERVAL = 0.8 // recheck sooner when blocked by the concurrency cap
-const STUCK_TIMEOUT = 3 // force wave clear after this long with nothing left to kill
 const CRATE_R_MIN = 5
 const CRATE_R_MAX = ARENA_RADIUS - 5
 const CRATE_PLAYER_DIST = 6
@@ -37,7 +36,6 @@ interface DirectorLocal {
   startedWave: number // wave number whose start we've processed (0 = none)
   bag: EnemyKind[] // shuffled spawn bag for the current wave
   dropTimer: number
-  stuckT: number
   crateTimer: number
   clearHandled: boolean
   visT: number // visual clock for crate idle animation (never reset)
@@ -143,7 +141,7 @@ function pickBuffChoices(): BuffId[] {
 
 export function Director() {
   const localRef = useRef<DirectorLocal>({
-    startedWave: 0, bag: [], dropTimer: 0, stuckT: 0,
+    startedWave: 0, bag: [], dropTimer: 0,
     crateTimer: CRATE_INTERVAL, clearHandled: false, visT: 0,
   })
 
@@ -173,7 +171,6 @@ export function Director() {
     local.startedWave = 0
     local.bag = []
     local.dropTimer = 0
-    local.stuckT = 0
     local.crateTimer = CRATE_INTERVAL
     local.clearHandled = false
     // visT intentionally kept — pure visual clock
@@ -186,7 +183,6 @@ export function Director() {
     local.startedWave = n
     local.bag = buildBag(quota)
     local.dropTimer = 0 // first drop request fires on the next director frame
-    local.stuckT = 0
     local.clearHandled = false
     useGame.getState().set({ enemiesRemaining: total })
     events.emit('waveStart', { wave: n })
@@ -223,15 +219,34 @@ export function Director() {
     if (st.phase === 'wave' && localRef.current.startedWave !== st.wave) startWave(st.wave)
   }
 
+  /** Spawns queued with the AGI (requests keep their spawns until fully released). */
+  function inFlightSpawns(): number {
+    let n = 0
+    for (const r of world.dropRequests) n += r.spawns.length
+    return n
+  }
+
+  /**
+   * enemiesRemaining is DERIVED, never counted down: alive (incl. collapsing
+   * corpses, matching the old decrement-at-removal timing) + pending + queued
+   * with the AGI + still in the bag. Recomputed every director frame, so no
+   * bookkeeping drift can ever eat a wave or leak into the next one.
+   * (Brief ≤ batch-size overcount while a hand releases is harmless.)
+   */
+  function syncRemaining(): number {
+    const truth =
+      world.enemies.size + world.pendingSpawns.length + inFlightSpawns() + localRef.current.bag.length
+    const s = useGame.getState()
+    if (s.enemiesRemaining !== truth) s.set({ enemiesRemaining: truth })
+    return truth
+  }
+
   function dripFeed(step: number): void {
     const local = localRef.current
     local.dropTimer -= step
     if (local.dropTimer > 0 || local.bag.length === 0) return
-    // Exact in-flight accounting: every bag pop is pushed into a drop request and
-    // eventually becomes an enemy; enemiesRemaining only falls on kills. Therefore
-    // enemies alive + pending + queued-with-the-AGI == enemiesRemaining - bag.length.
-    const s = useGame.getState()
-    const activeAndInFlight = Math.max(0, s.enemiesRemaining - local.bag.length)
+    // cap accounting from ground truth (the derived counter's own inputs)
+    const activeAndInFlight = world.enemies.size + world.pendingSpawns.length + inFlightSpawns()
     const headroom = MAX_CONCURRENT_ENEMIES - activeAndInFlight
     if (headroom <= 0) {
       local.dropTimer = CAP_RETRY_INTERVAL
@@ -255,27 +270,14 @@ export function Director() {
     world.dropRequests.push({ id: world.id(), spawns })
   }
 
-  function safetyAndClear(step: number): void {
+  function safetyAndClear(_step: number): void {
     const local = localRef.current
     const s = useGame.getState()
     if (local.startedWave !== s.wave || local.clearHandled) return
-    // Stall watchdog. enemiesRemaining > bag.length while nothing is observable
-    // anywhere (no enemies, no pending spawns, no queued requests) means in-flight
-    // spawns were lost (or the AGI has held a grabbed batch abnormally long).
-    // After STUCK_TIMEOUT of that, reconcile the counter down to what the bag can
-    // still deliver — with an empty bag that is 0, which resolves through the
-    // normal wave-clear path below; with a non-empty bag it un-blocks the drip cap.
-    const observable = world.enemies.size + world.pendingSpawns.length + world.dropRequests.length
-    if (observable === 0 && s.enemiesRemaining > local.bag.length) {
-      local.stuckT += step
-      if (local.stuckT > STUCK_TIMEOUT) {
-        local.stuckT = 0
-        s.set({ enemiesRemaining: local.bag.length })
-      }
-    } else {
-      local.stuckT = 0
-    }
-    if (useGame.getState().enemiesRemaining > 0) return
+    // Wave clears only on ground truth: field, queues, hands and bag ALL empty.
+    // (The old count-down + stall watchdog could zero the counter early, which
+    // advanced waves mid-fight and cascaded kill-accounting into later waves.)
+    if (syncRemaining() > 0) return
     // ─── wave clear ───
     local.clearHandled = true
     events.emit('waveClear', { wave: s.wave })
