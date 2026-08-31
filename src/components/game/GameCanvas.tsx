@@ -35,7 +35,7 @@ function Lighting() {
           texture-authored shading, AO and normal detail, not from blasting lumens */}
       <directionalLight
         position={[24, 42, 18]}
-        intensity={1.35}
+        intensity={1.6}
         color={0xfff2df}
         castShadow
         // 1536 keeps PCFSoft shadows visually equivalent at 44% less shadow-map
@@ -50,8 +50,8 @@ function Lighting() {
         shadow-camera-bottom={-55}
         shadow-camera-far={140}
       />
-      <hemisphereLight args={[0x33415e, 0x1a1410, 0.55]} />
-      <directionalLight position={[-30, 18, -40]} intensity={0.25} color={0x6e8cff} />
+      <hemisphereLight args={[0x3d4c6e, 0x241d16, 0.85]} />
+      <directionalLight position={[-30, 18, -40]} intensity={0.35} color={0x6e8cff} />
     </>
   )
 }
@@ -70,6 +70,7 @@ export default function GameCanvas() {
       gl={{ powerPreference: 'high-performance', antialias: false }}
       onCreated={({ gl, scene, camera }) => {
         gl.toneMapping = THREE.ACESFilmicToneMapping
+        gl.toneMappingExposure = 1.18 // global lift — night mood, but readable
         scene.background = new THREE.Color(0x0b0e1a)
         scene.fog = new THREE.Fog(0x0b0e1a, 70, 260)
         if (process.env.NODE_ENV === 'development') {
@@ -96,13 +97,13 @@ export default function GameCanvas() {
       {smooth ? (
         <EffectComposer multisampling={0}>
           <Bloom mipmapBlur levels={5} luminanceThreshold={1.0} intensity={0.85} />
-          <Vignette darkness={0.72} offset={0.28} />
+          <Vignette darkness={0.58} offset={0.24} />
         </EffectComposer>
       ) : (
         <EffectComposer multisampling={4}>
           <N8AO aoRadius={2.2} intensity={3.2} distanceFalloff={1} quality="performance" halfRes />
           <Bloom mipmapBlur levels={6} luminanceThreshold={1.0} intensity={0.85} />
-          <Vignette darkness={0.72} offset={0.28} />
+          <Vignette darkness={0.58} offset={0.24} />
         </EffectComposer>
       )}
     </Canvas>
