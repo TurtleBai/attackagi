@@ -294,7 +294,7 @@ uniform float uTime;
 varying vec2 vUv;
 varying float vSeed;
 varying float vFade;
-${NOISE2}
+${NOISE2_LO}
 void main(){
   float x = vUv.x - 0.5;
   float y = vUv.y;
@@ -399,15 +399,17 @@ export function beamWallMaterial(): THREE.ShaderMaterial {
     uniforms: {
       uColor: { value: new THREE.Color(1.8, 0.32, 0.16) },
       uTime: { value: 0 }, uFade: { value: 0 }, uLen: { value: 10 }, uSeed: { value: 0 },
+      uNoise: { value: energyNoiseTexture() },
     },
     vert: QUAD_VERT,
     frag: /* glsl */ `
 uniform vec3 uColor;
 uniform float uTime, uFade, uLen, uSeed;
+uniform sampler2D uNoise;
 varying vec2 vUv; // x along, y up
-${NOISE2}
 void main(){
-  float n = fbm(vec2(vUv.x * uLen * 0.3 - uTime * 3.4 + uSeed, vUv.y * 2.5 + uTime * 0.9));
+  // baked tiling fbm (1 fetch, was 4-octave analytic fbm = ~16 sin/px)
+  float n = texture2D(uNoise, vec2(vUv.x * uLen * 0.3 - uTime * 3.4 + uSeed, vUv.y * 2.5 + uTime * 0.9) / ${NOISE_TEX_PERIOD.toFixed(1)}).r;
   float coreQ = (vUv.y - 0.10) * 6.5;
   float core = exp(-coreQ * coreQ);
   float topFade = 1.0 - smoothstep(0.45, 1.0, vUv.y);
@@ -445,23 +447,28 @@ void main(){
 // ─── Bursts / shockwaves / fireballs ─────────────────────────────────────────
 
 export function ringMaterial(): THREE.ShaderMaterial {
+  // Drawn on a unit annulus (RingGeometry inner 0.7) scaled by life instead of
+  // a full max-radius quad — ~10x less fill on big rings. uScale = meshScale /
+  // maxRadius, so rl * uScale recovers the same normalized radius the old quad
+  // shader used and the analytic band profile is unchanged where covered.
   return mat({
     vert: QUAD_VERT,
     polygonOffset: true,
     uniforms: {
       uColor: { value: new THREE.Color(2.4, 1.1, 0.5) },
-      uP: { value: 0 }, uFade: { value: 0 }, uWidth: { value: 0.22 },
+      uP: { value: 0 }, uFade: { value: 0 }, uWidth: { value: 0.22 }, uScale: { value: 1 },
     },
     frag: /* glsl */ `
 uniform vec3 uColor;
-uniform float uP, uFade, uWidth;
+uniform float uP, uFade, uWidth, uScale;
 varying vec2 vUv;
 void main(){
-  float r = length(vUv * 2.0 - 1.0);
-  if (r > 1.0) discard;
+  float rl = length(vUv * 2.0 - 1.0); // annulus span: 0.7..1.0
+  float r = rl * uScale;              // normalized world radius (1 = maxRadius)
   float d = abs(r - uP);
   float ring = 1.0 - smoothstep(0.0, uWidth, d);
-  float a = ring * ring * uFade;
+  float inner = smoothstep(0.70, 0.78, rl); // feather the inner geometric edge
+  float a = ring * ring * uFade * inner;
   if (a < 0.005) discard;
   gl_FragColor = vec4(uColor * (0.4 + a), a);
 }`,
@@ -491,7 +498,7 @@ void main(){
 uniform float uLife, uSeed;
 uniform vec3 uCore, uEdge;
 varying vec3 vP;
-${NOISE3}
+${NOISE3_LO}
 void main(){
   float n = fbm3(vP * 3.1 + vec3(uSeed * 3.0) + vec3(0.0, -uLife * 2.2, 0.0));
   float th = uLife * 1.25 - 0.14;

@@ -15,7 +15,9 @@ import {
 } from './Enemies.ai'
 import { getKindRig, updateOutlinePulse, type KindRig } from './Enemies.bodies'
 import { LOGO_COUNT } from './Enemies.decals'
-import { getEnemyBatcher, resetEnemyBatcher, type LaserSlot } from './Enemies.instanced'
+import {
+  type EnemyBatcher, getEnemyBatcher, resetEnemyBatcher, type LaserSlot,
+} from './Enemies.instanced'
 
 // The 5 robot enemy kinds: spawning (drains world.pendingSpawns), AI state machines
 // (Enemies.ai), locomotion/attack posing against ONE shared template rig per kind
@@ -525,6 +527,64 @@ function makeDustPool(parent: THREE.Object3D): DustPool {
   }
 }
 
+// ─── Pose-rate LOD ───────────────────────────────────────────────────────────
+// Enemies beyond LOD_DIST from the camera are posed+committed every 2nd frame
+// (alternating by id parity); on skip frames the batcher replays their cached
+// slot data, dropping the dominant per-enemy pose + updateMatrixWorld chains.
+
+const LOD_DIST_SQ = 25 * 25
+let frameN = 0 // pose-LOD parity clock
+
+/**
+ * States that must ALWAYS pose at full rate, regardless of distance — attack
+ * telegraphs/tells may never stutter. Falling (drop-in tell) and hit-flash
+ * (shot feedback) too. Snipers always: their laser sight ends AT THE PLAYER
+ * whatever the range, and it is rebuilt from the pose every frame.
+ */
+function poseFullRate(e: Enemy): boolean {
+  if (e.falling || e.hitFlash > 0) return true
+  switch (e.kind) {
+    case 'melee': return e.state === 'windup' || e.state === 'swing'
+    case 'tank': return e.state === 'windup' || e.state === 'dash' || e.state === 'stagger'
+    case 'sniper': return true
+    case 'ranger': return (e.data.muzzleT ?? 0) > 0
+    case 'drone':
+      // dropwait/drop-pulse are the bomb tell; a rotors-dead wreck tumbles fast
+      return e.state === 'dropwait' || (e.data.dropT ?? 0) > 0 ||
+        (e.hp <= 0 && e.data.impacted !== 1)
+  }
+}
+
+// ─── Frozen guard (mirrors Projectiles' frozenSynced) ────────────────────────
+// When the sim is off AND the world clock is frozen (pause / buff pick), pose +
+// commit + upload ONE final frame, then skip the whole visual-sync block so a
+// pause costs ~zero enemy CPU. Death/victory screens keep the clock running, so
+// idle posing continues behind them as before.
+
+let frozenSynced = false
+let frozenTime = -1
+
+/**
+ * Pose + commit one enemy (module-level: no per-frame closures). Far,
+ * non-telegraphing enemies replay their cached instance slots on alternate
+ * frames (by id parity); everyone else gets the full pose, with decay/phase
+ * clocks caught up across any skipped frame via world.time.
+ */
+function commitOne(
+  e: Enemy, rig: KindRig, batch: EnemyBatcher, step: number, running: boolean,
+  camX: number, camY: number, camZ: number,
+): void {
+  if (((frameN + e.id) & 1) === 1 && !poseFullRate(e)) {
+    const dx = e.pos.x - camX
+    const dy = e.pos.y - camY
+    const dz = e.pos.z - camZ
+    if (dx * dx + dy * dy + dz * dz > LOD_DIST_SQ && batch.commitCached(e)) return
+  }
+  const pStep = Math.min(0.1, Math.max(step, world.time - (e.data.posedAt ?? world.time)))
+  batch.commit(e, poseBody(e, rig, pStep, running), GLOW, LASER)
+  e.data.posedAt = world.time
+}
+
 // ─── Component ───────────────────────────────────────────────────────────────
 
 const removeList: number[] = []
@@ -543,6 +603,8 @@ export function Enemies() {
     const reset = () => {
       resetEnemyBatcher()
       dustRef.current?.reset()
+      frozenSynced = false
+      frozenTime = -1
     }
     const unsub = useGame.subscribe((s, prev) => {
       if (s.runId !== prev.runId) reset()
@@ -553,7 +615,7 @@ export function Enemies() {
     }
   }, [])
 
-  useFrame((_, dt) => {
+  useFrame((st, dt) => {
     const step = Math.min(dt, 0.05)
     const root = rootRef.current
     if (!root) return
@@ -631,11 +693,19 @@ export function Enemies() {
       for (const e of world.enemies.values()) {
         if (!e.falling && e.hp > 0) world.resolveCapsule(e.pos, e.radius)
       }
-      for (const id of removeList) world.removeEnemy(id)
+      for (const id of removeList) {
+        world.removeEnemy(id)
+        batch.release(id) // free its pose-LOD cache row
+      }
     }
 
+    // frozen guard: sim off + clock frozen + final frame already uploaded →
+    // the entire visual-sync block below (poses, commits, uploads) is skipped
+    if (!running && frozenSynced && world.time === frozenTime) return
+
     // visual sync: pose the shared rig per enemy and commit into instance slots
-    // (pose keeps idling even off-sim)
+    // (pose keeps idling even off-sim while the world clock runs)
+    frameN++
     const gs = useGame.getState()
     const highlightStragglers =
       gs.phase === 'wave' && gs.enemiesRemaining > 0 && gs.enemiesRemaining <= STRAGGLER_OUTLINE_COUNT
@@ -649,16 +719,19 @@ export function Enemies() {
     for (const e of world.enemies.values()) {
       ;(e.hp > 0 ? aliveByKind : dyingByKind)[e.kind].push(e)
     }
+    const cam = st.camera.position
     for (const kind of KINDS) {
       const rig = getKindRig(kind)
       const alive = aliveByKind[kind]
       const dying = dyingByKind[kind]
-      for (const e of alive) batch.commit(e, poseBody(e, rig, step, running), GLOW, LASER)
-      for (const e of dying) batch.commit(e, poseBody(e, rig, step, running), GLOW, LASER)
+      for (const e of alive) commitOne(e, rig, batch, step, running, cam.x, cam.y, cam.z)
+      for (const e of dying) commitOne(e, rig, batch, step, running, cam.x, cam.y, cam.z)
       batch.setOutline(kind, highlightStragglers ? alive.length : 0)
     }
-    batch.finish()
+    batch.finish(cam)
     dust.update(step)
+    frozenSynced = !running
+    frozenTime = world.time
   }, FRAME_PRIO.enemies)
 
   return <group ref={rootRef} />

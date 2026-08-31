@@ -98,11 +98,12 @@ export function isCoarsePointer(): boolean {
  * value it falls back to 'smooth' (or 'potato' on coarse-pointer devices).
  */
 export function resolvedTier(): ResolvedTier {
-  const q = useSettings.getState().quality as ResolvedTier | 'auto'
+  const s = useSettings.getState()
+  const q = s.quality
+  // explicit whitelist so a tampered/corrupt persisted value falls through to
+  // the adaptive resolution instead of indexing TIER_KNOBS with garbage
   if (q === 'potato' || q === 'smooth' || q === 'pretty') return q
-  const adaptive = (useSettings.getState() as unknown as { resolvedQuality?: ResolvedTier }).resolvedQuality
-  if (adaptive) return adaptive
-  return isCoarsePointer() ? 'potato' : 'smooth'
+  return s.resolvedQuality ?? (isCoarsePointer() ? 'potato' : 'smooth')
 }
 
 export function tierKnobs(): TierKnobs {

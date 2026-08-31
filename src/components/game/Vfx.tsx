@@ -1,9 +1,10 @@
 'use client'
-import { useFrame } from '@react-three/fiber'
+import { useFrame, useThree } from '@react-three/fiber'
 import { useEffect, useMemo, useRef } from 'react'
 import * as THREE from 'three'
 import { ARENA_RADIUS, FRAME_PRIO } from '@/game/constants'
 import { events, type EventMap } from '@/game/events'
+import { tierKnobs } from '@/game/quality'
 import { useGame } from '@/game/store'
 import { world } from '@/game/world'
 import { BeamWalls, FirePatches } from './Vfx.hazards'
@@ -27,6 +28,51 @@ const _b = new THREE.Vector3()
 const _c = new THREE.Vector3()
 
 const TAU = Math.PI * 2
+
+// ─── Burst spawn scheduler ───────────────────────────────────────────────────
+// Event handlers no longer run their particle loops inline: they push a burst
+// spec into a fixed ring queue, and the frame update drains up to SPAWN_BUDGET
+// particle spawns per frame (drain starts the SAME frame — vfx runs after every
+// emitter in FRAME_PRIO — so first-particle latency is imperceptible). A frame
+// where many deaths + explosions land no longer spikes; the tail of each burst
+// spreads over the next 2–4 frames. One-shot slot effects (fireballs, rings,
+// flashes, lights, tracers) stay immediate in the handlers — they're cheap.
+
+const BURST_CAP = 64
+const SPAWN_BUDGET = 30 // particle spawns drained per frame
+
+const B_SHOT_SPARKS = 0
+const B_BATHIT_SPARKS = 1
+const B_SHIELD_SPARKS = 2
+const B_EXPL_SPARKS = 3
+const B_EXPL_PUFFS = 4
+const B_IGNITE_SPARKS = 5
+const B_HIT_SPARKS = 6
+const B_DEATH_CHUNKS = 7
+const B_DEATH_SPARKS = 8
+const B_BOSS_SPARKS = 9
+const B_PICKUP_GLINTS = 10
+const B_CRATE_PUFFS = 11
+const B_SMASH_PUFFS = 12
+
+interface BurstSpec {
+  kind: number
+  n: number // remaining spawns
+  total: number
+  x: number; y: number; z: number
+  a: number; b: number // per-kind extras (dir / radius / charge)
+}
+
+// hoisted spark options — the old inline literals allocated one object per spark
+const SO_SHOT = { gravity: 16, width: 0.02 }
+const SO_BATHIT = { gravity: 14, width: 0.025 }
+const SO_SHIELD = { gravity: 12, width: 0.02 }
+const SO_EXPL = { gravity: 20, width: 0.03, stretch: 1.4 }
+const SO_IGNITE = { gravity: 4, width: 0.022, stretch: 0.6 }
+const SO_HIT = { gravity: 10, width: 0.018 }
+const SO_DEATH = { gravity: 16, width: 0.025 }
+const SO_BOSS = { gravity: 12, width: 0.035, stretch: 1.2 }
+const SO_PICKUP = { gravity: 0, width: 0.022, stretch: 0.5, drag: 0.2 }
 
 function buildSlashGeometry(): THREE.BufferGeometry {
   // curved ribbon band in camera-local space: x right, y up, -z forward
@@ -87,20 +133,38 @@ class VfxSystems {
   private lastShake = new THREE.Vector3()
   private lastCamAfter = new THREE.Vector3(Infinity, Infinity, Infinity)
 
+  // burst scheduler state (fixed-size, zero steady-state allocation)
+  private burstSpecs: BurstSpec[] = []
+  private burstQueue = new Int32Array(BURST_CAP)
+  private burstFree = new Int32Array(BURST_CAP)
+  private burstHead = 0
+  private burstLen = 0
+  private burstFreeTop = BURST_CAP
+
   constructor() {
     const g = this.group
+    // STRUCTURAL knobs, read once at construction (component mount): transient
+    // pool sizes scale with vfxDensity (1 on smooth/pretty → identical sizes);
+    // mounted transient light count comes from vfxLights.
+    const knobs = tierKnobs()
+    const scaled = (base: number) => Math.max(2, Math.round(base * knobs.vfxDensity))
     this.telegraphs = new Telegraphs(g)
     this.fires = new FirePatches(g)
     this.beams = new BeamWalls(g)
-    this.sparks = new SparkPool(g, 256)
-    this.chunks = new ChunkPool(g, 96)
-    this.puffs = new PuffPool(g, 64)
-    this.rings = new RingPool(g, 8)
-    this.fireballs = new FireballPool(g, 8)
-    this.tracers = new LinePool(g, 10, tracerMaterial, 22)
-    this.beamFlashes = new LinePool(g, 8, beamFlashMaterial, 23)
-    this.flashes = new FlashPool(g, 5)
-    this.lights = new LightPool(g, 3)
+    this.sparks = new SparkPool(g, scaled(256))
+    this.chunks = new ChunkPool(g, scaled(96))
+    this.puffs = new PuffPool(g, scaled(64))
+    this.rings = new RingPool(g, scaled(8))
+    this.fireballs = new FireballPool(g, scaled(8))
+    this.tracers = new LinePool(g, scaled(10), tracerMaterial, 22)
+    this.beamFlashes = new LinePool(g, scaled(8), beamFlashMaterial, 23)
+    this.flashes = new FlashPool(g, scaled(5))
+    this.lights = new LightPool(g, knobs.vfxLights)
+
+    for (let i = 0; i < BURST_CAP; i++) {
+      this.burstSpecs.push({ kind: 0, n: 0, total: 0, x: 0, y: 0, z: 0, a: 0, b: 0 })
+      this.burstFree[i] = i
+    }
 
     this.slashMat = slashMaterial()
     this.slashMesh = new THREE.Mesh(buildSlashGeometry(), this.slashMat)
@@ -117,6 +181,157 @@ class VfxSystems {
     g.add(this.dodgeMesh)
   }
 
+  // ─── burst scheduler ───────────────────────────────────────────────────────
+
+  private enqueueBurst(kind: number, count: number, x: number, y: number, z: number, a = 0, b = 0): void {
+    if (this.burstFreeTop === 0) {
+      // scheduler saturated — spawn inline (worst case = pre-scheduler behavior)
+      for (let i = 0; i < count; i++) this.emitBurstOne(kind, count - i, count, x, y, z, a, b)
+      return
+    }
+    const idx = this.burstFree[--this.burstFreeTop]
+    const s = this.burstSpecs[idx]
+    s.kind = kind; s.n = count; s.total = count
+    s.x = x; s.y = y; s.z = z; s.a = a; s.b = b
+    this.burstQueue[(this.burstHead + this.burstLen++) % BURST_CAP] = idx
+  }
+
+  /** Spawns exactly one particle of a burst; `n` counts down from `total`. */
+  private emitBurstOne(kind: number, n: number, total: number,
+    px: number, py: number, pz: number, p0: number, p1: number): void {
+    switch (kind) {
+      case B_SHOT_SPARKS: { // p0/p1 = shot dir x/z
+        _c.set(
+          -p0 * (1.5 + Math.random() * 3) + (Math.random() - 0.5) * 5,
+          Math.random() * 4 + 0.5,
+          -p1 * (1.5 + Math.random() * 3) + (Math.random() - 0.5) * 5)
+        this.sparks.spawn(px, py, pz, _c.x, _c.y, _c.z,
+          2.6, 1.6, 0.6, 0.16 + Math.random() * 0.18, SO_SHOT)
+        break
+      }
+      case B_BATHIT_SPARKS: { // p0 = charge multiplier
+        const a = Math.random() * TAU
+        const sp = (2 + Math.random() * 5) * p0
+        this.sparks.spawn(px, py, pz,
+          Math.cos(a) * sp, 1 + Math.random() * 4 * p0, Math.sin(a) * sp,
+          2.7, 1.8, 0.7, 0.2 + Math.random() * 0.2, SO_BATHIT)
+        break
+      }
+      case B_SHIELD_SPARKS: {
+        const a = Math.random() * TAU
+        const sp = 2 + Math.random() * 4
+        this.sparks.spawn(px, py, pz,
+          Math.cos(a) * sp, 1.5 + Math.random() * 4, Math.sin(a) * sp,
+          1.4, 1.9, 3.2, 0.18 + Math.random() * 0.15, SO_SHIELD)
+        break
+      }
+      case B_EXPL_SPARKS: { // p0 = blast radius
+        const a = Math.random() * TAU
+        const sp = (4 + Math.random() * 9) * (0.6 + p0 * 0.12)
+        this.sparks.spawn(px, py, pz,
+          Math.cos(a) * sp, 3 + Math.random() * 9, Math.sin(a) * sp,
+          2.8, 1.5, 0.5, 0.3 + Math.random() * 0.3, SO_EXPL)
+        break
+      }
+      case B_EXPL_PUFFS: { // p0 = blast radius
+        const a = Math.random() * TAU
+        const rr = Math.random() * p0 * 0.7
+        this.puffs.spawn(px + Math.cos(a) * rr, py, pz + Math.sin(a) * rr,
+          Math.cos(a) * 2.5, 1.2 + Math.random(), Math.sin(a) * 2.5,
+          p0 * 0.35, p0 * 0.8, 0.32, 0.29, 0.26, 0.7 + Math.random() * 0.4)
+        break
+      }
+      case B_IGNITE_SPARKS: { // p0 = fire radius
+        const a = Math.random() * TAU
+        const rr = Math.random() * p0 * 0.6
+        this.sparks.spawn(px + Math.cos(a) * rr, py, pz + Math.sin(a) * rr,
+          Math.cos(a) * 1.5, 2.5 + Math.random() * 4, Math.sin(a) * 1.5,
+          2.6, 1.1, 0.3, 0.35 + Math.random() * 0.3, SO_IGNITE)
+        break
+      }
+      case B_HIT_SPARKS: {
+        const a = Math.random() * TAU
+        this.sparks.spawn(px, py, pz,
+          Math.cos(a) * 2.5, 1 + Math.random() * 2.5, Math.sin(a) * 2.5,
+          2.5, 1.7, 0.7, 0.12 + Math.random() * 0.1, SO_HIT)
+        break
+      }
+      case B_DEATH_CHUNKS: {
+        const a = Math.random() * TAU
+        const sp = 2 + Math.random() * 4.5
+        this.chunks.spawn(px, py, pz,
+          Math.cos(a) * sp, 2 + Math.random() * 5, Math.sin(a) * sp,
+          0.05 + Math.random() * 0.08, 0.9 + Math.random() * 0.5)
+        break
+      }
+      case B_DEATH_SPARKS: {
+        const a = Math.random() * TAU
+        const sp = 3 + Math.random() * 5
+        this.sparks.spawn(px, py, pz,
+          Math.cos(a) * sp, 1 + Math.random() * 6, Math.sin(a) * sp,
+          2.7, 1.6, 0.5, 0.2 + Math.random() * 0.25, SO_DEATH)
+        break
+      }
+      case B_BOSS_SPARKS: {
+        const a = Math.random() * TAU
+        const sp = 2 + Math.random() * 5
+        this.sparks.spawn(px, py, pz,
+          Math.cos(a) * sp, Math.random() * 5 - 1, Math.sin(a) * sp,
+          2.8, 2.0, 0.9, 0.2 + Math.random() * 0.2, SO_BOSS)
+        break
+      }
+      case B_PICKUP_GLINTS: {
+        const a = Math.random() * TAU
+        const rr = 0.15 + Math.random() * 0.4
+        this.sparks.spawn(px + Math.cos(a) * rr, py + 0.15 + Math.random() * 0.5, pz + Math.sin(a) * rr,
+          0, 1.4 + Math.random() * 1.6, 0,
+          2.5, 2.1, 0.9, 0.4 + Math.random() * 0.3, SO_PICKUP)
+        break
+      }
+      case B_CRATE_PUFFS: {
+        const a = Math.random() * TAU
+        this.puffs.spawn(px + Math.cos(a) * 0.4, py, pz + Math.sin(a) * 0.4,
+          Math.cos(a) * 1.5, 0.8 + Math.random(), Math.sin(a) * 1.5,
+          0.4, 1.2, 0.42, 0.37, 0.3, 0.55 + Math.random() * 0.3)
+        break
+      }
+      case B_SMASH_PUFFS: { // deterministic ring of puffs — index from total-n
+        const a = ((total - n) / total) * TAU
+        const rr = 5 + Math.random() * 22
+        this.puffs.spawn(Math.cos(a) * rr, 0.5, Math.sin(a) * rr,
+          Math.cos(a) * 4, 1.5 + Math.random() * 1.5, Math.sin(a) * 4,
+          1.4, 2.6, 0.38, 0.34, 0.29, 0.9 + Math.random() * 0.5)
+        break
+      }
+    }
+  }
+
+  private drainBursts(): void {
+    let budget = SPAWN_BUDGET
+    while (budget > 0 && this.burstLen > 0) {
+      const idx = this.burstQueue[this.burstHead]
+      const s = this.burstSpecs[idx]
+      const take = s.n < budget ? s.n : budget
+      for (let i = 0; i < take; i++) {
+        this.emitBurstOne(s.kind, s.n, s.total, s.x, s.y, s.z, s.a, s.b)
+        s.n--
+      }
+      budget -= take
+      if (s.n === 0) {
+        this.burstHead = (this.burstHead + 1) % BURST_CAP
+        this.burstLen--
+        this.burstFree[this.burstFreeTop++] = idx
+      }
+    }
+  }
+
+  private clearBursts(): void {
+    this.burstHead = 0
+    this.burstLen = 0
+    this.burstFreeTop = BURST_CAP
+    for (let i = 0; i < BURST_CAP; i++) this.burstFree[i] = i
+  }
+
   // ─── event handlers ────────────────────────────────────────────────────────
 
   onShot(p: EventMap['shot']): void {
@@ -127,14 +342,7 @@ class VfxSystems {
     const end = p.hitPoint ?? _b.copy(p.origin).addScaledVector(p.dir, 60)
     this.tracers.spawn(p.origin, end, 0.05, 2.6, 1.7, 0.9, 0.07)
     if (p.hitPoint) {
-      for (let i = 0; i < 9; i++) {
-        _c.set(
-          -p.dir.x * (1.5 + Math.random() * 3) + (Math.random() - 0.5) * 5,
-          Math.random() * 4 + 0.5,
-          -p.dir.z * (1.5 + Math.random() * 3) + (Math.random() - 0.5) * 5)
-        this.sparks.spawn(p.hitPoint.x, p.hitPoint.y, p.hitPoint.z, _c.x, _c.y, _c.z,
-          2.6, 1.6, 0.6, 0.16 + Math.random() * 0.18, { gravity: 16, width: 0.02 })
-      }
+      this.enqueueBurst(B_SHOT_SPARKS, 9, p.hitPoint.x, p.hitPoint.y, p.hitPoint.z, p.dir.x, p.dir.z)
     }
   }
 
@@ -149,25 +357,13 @@ class VfxSystems {
 
   onBatHit(p: EventMap['batHit']): void {
     const k = 1 + p.charged * 1.5
-    for (let i = 0; i < 12; i++) {
-      const a = Math.random() * TAU
-      const sp = (2 + Math.random() * 5) * k
-      this.sparks.spawn(p.pos.x, p.pos.y, p.pos.z,
-        Math.cos(a) * sp, 1 + Math.random() * 4 * k, Math.sin(a) * sp,
-        2.7, 1.8, 0.7, 0.2 + Math.random() * 0.2, { gravity: 14, width: 0.025 })
-    }
+    this.enqueueBurst(B_BATHIT_SPARKS, 12, p.pos.x, p.pos.y, p.pos.z, k)
     this.rings.spawn(p.pos.x, 0.06, p.pos.z, 1.1 + p.charged * 1.6, 0.3, 2.6, 1.4, 0.5, true, 0.3)
   }
 
   onShieldBlock(p: EventMap['shieldBlock']): void {
     this.flashes.spawn(p.pos, 0.55, 1.5, 2.0, 3.2, 0.09)
-    for (let i = 0; i < 10; i++) {
-      const a = Math.random() * TAU
-      const sp = 2 + Math.random() * 4
-      this.sparks.spawn(p.pos.x, p.pos.y, p.pos.z,
-        Math.cos(a) * sp, 1.5 + Math.random() * 4, Math.sin(a) * sp,
-        1.4, 1.9, 3.2, 0.18 + Math.random() * 0.15, { gravity: 12, width: 0.02 })
-    }
+    this.enqueueBurst(B_SHIELD_SPARKS, 10, p.pos.x, p.pos.y, p.pos.z)
   }
 
   onExplosion(p: EventMap['explosion']): void {
@@ -179,21 +375,9 @@ class VfxSystems {
     this.rings.spawn(p.pos.x, 0.06, p.pos.z, R * 1.9, boss ? 1.1 : 0.45,
       boss ? 3.0 : 2.5, boss ? 2.6 : 1.2, boss ? 2.0 : 0.5, true, 0.22)
     const nS = boss ? 26 : 13
-    for (let i = 0; i < nS; i++) {
-      const a = Math.random() * TAU
-      const sp = (4 + Math.random() * 9) * (0.6 + R * 0.12)
-      this.sparks.spawn(p.pos.x, p.pos.y + 0.3, p.pos.z,
-        Math.cos(a) * sp, 3 + Math.random() * 9, Math.sin(a) * sp,
-        2.8, 1.5, 0.5, 0.3 + Math.random() * 0.3, { gravity: 20, width: 0.03, stretch: 1.4 })
-    }
+    this.enqueueBurst(B_EXPL_SPARKS, nS, p.pos.x, p.pos.y + 0.3, p.pos.z, R)
     const nP = p.kind === 'punch' ? 8 : boss ? 10 : 5
-    for (let i = 0; i < nP; i++) {
-      const a = Math.random() * TAU
-      const rr = Math.random() * R * 0.7
-      this.puffs.spawn(p.pos.x + Math.cos(a) * rr, 0.4, p.pos.z + Math.sin(a) * rr,
-        Math.cos(a) * 2.5, 1.2 + Math.random(), Math.sin(a) * 2.5,
-        R * 0.35, R * 0.8, 0.32, 0.29, 0.26, 0.7 + Math.random() * 0.4)
-    }
+    this.enqueueBurst(B_EXPL_PUFFS, nP, p.pos.x, 0.4, p.pos.z, R)
     _a.set(p.pos.x, p.pos.y + 1, p.pos.z)
     this.lights.spawn(_a, boss ? 0xfff2dd : 0xff9a4a, 30 + R * 10, R * 7, boss ? 1.2 : 0.4)
     const d = Math.max(4, _a.distanceTo(world.player.pos))
@@ -203,52 +387,25 @@ class VfxSystems {
   onFireIgnite(p: EventMap['fireIgnite']): void {
     _a.copy(p.pos).setY(p.pos.y + 0.4)
     this.flashes.spawn(_a, p.radius * 0.5, 2.8, 1.5, 0.5, 0.12)
-    for (let i = 0; i < 14; i++) {
-      const a = Math.random() * TAU
-      const rr = Math.random() * p.radius * 0.6
-      this.sparks.spawn(p.pos.x + Math.cos(a) * rr, 0.2, p.pos.z + Math.sin(a) * rr,
-        Math.cos(a) * 1.5, 2.5 + Math.random() * 4, Math.sin(a) * 1.5,
-        2.6, 1.1, 0.3, 0.35 + Math.random() * 0.3, { gravity: 4, width: 0.022, stretch: 0.6 })
-    }
+    this.enqueueBurst(B_IGNITE_SPARKS, 14, p.pos.x, 0.2, p.pos.z, p.radius)
   }
 
   onEnemyHit(p: EventMap['enemyHit']): void {
-    for (let i = 0; i < 3; i++) {
-      const a = Math.random() * TAU
-      this.sparks.spawn(p.pos.x, p.pos.y + 1.0, p.pos.z,
-        Math.cos(a) * 2.5, 1 + Math.random() * 2.5, Math.sin(a) * 2.5,
-        2.5, 1.7, 0.7, 0.12 + Math.random() * 0.1, { gravity: 10, width: 0.018 })
-    }
+    this.enqueueBurst(B_HIT_SPARKS, 3, p.pos.x, p.pos.y + 1.0, p.pos.z)
   }
 
   onEnemyDeath(p: EventMap['enemyDeath']): void {
-    for (let i = 0; i < 8; i++) {
-      const a = Math.random() * TAU
-      const sp = 2 + Math.random() * 4.5
-      this.chunks.spawn(p.pos.x, p.pos.y + 0.8, p.pos.z,
-        Math.cos(a) * sp, 2 + Math.random() * 5, Math.sin(a) * sp,
-        0.05 + Math.random() * 0.08, 0.9 + Math.random() * 0.5)
-    }
-    for (let i = 0; i < 10; i++) {
-      const a = Math.random() * TAU
-      const sp = 3 + Math.random() * 5
-      this.sparks.spawn(p.pos.x, p.pos.y + 0.9, p.pos.z,
-        Math.cos(a) * sp, 1 + Math.random() * 6, Math.sin(a) * sp,
-        2.7, 1.6, 0.5, 0.2 + Math.random() * 0.25, { gravity: 16, width: 0.025 })
-    }
+    this.enqueueBurst(B_DEATH_CHUNKS, 8, p.pos.x, p.pos.y + 0.8, p.pos.z)
+    this.enqueueBurst(B_DEATH_SPARKS, 10, p.pos.x, p.pos.y + 0.9, p.pos.z)
+    // the anchor puff stays immediate so every death reads instantly even when
+    // the scheduler is backed up
     this.puffs.spawn(p.pos.x, p.pos.y + 0.7, p.pos.z, 0, 0.8, 0,
       0.5, 1.6, 0.12, 0.12, 0.13, 0.8)
   }
 
   onBossHit(p: EventMap['bossHit']): void {
     const at = p.pos ?? world.agi.headPos
-    for (let i = 0; i < 6; i++) {
-      const a = Math.random() * TAU
-      const sp = 2 + Math.random() * 5
-      this.sparks.spawn(at.x, at.y, at.z,
-        Math.cos(a) * sp, Math.random() * 5 - 1, Math.sin(a) * sp,
-        2.8, 2.0, 0.9, 0.2 + Math.random() * 0.2, { gravity: 12, width: 0.035, stretch: 1.2 })
-    }
+    this.enqueueBurst(B_BOSS_SPARKS, 6, at.x, at.y, at.z)
   }
 
   onBeamFire(p: EventMap['beamFire']): void {
@@ -264,22 +421,11 @@ class VfxSystems {
   }
 
   onPickup(p: EventMap['pickup']): void {
-    for (let i = 0; i < 10; i++) {
-      const a = Math.random() * TAU
-      const rr = 0.15 + Math.random() * 0.4
-      this.sparks.spawn(p.pos.x + Math.cos(a) * rr, p.pos.y + 0.15 + Math.random() * 0.5, p.pos.z + Math.sin(a) * rr,
-        0, 1.4 + Math.random() * 1.6, 0,
-        2.5, 2.1, 0.9, 0.4 + Math.random() * 0.3, { gravity: 0, width: 0.022, stretch: 0.5, drag: 0.2 })
-    }
+    this.enqueueBurst(B_PICKUP_GLINTS, 10, p.pos.x, p.pos.y, p.pos.z)
   }
 
   onCratePop(p: EventMap['cratePop']): void {
-    for (let i = 0; i < 5; i++) {
-      const a = Math.random() * TAU
-      this.puffs.spawn(p.pos.x + Math.cos(a) * 0.4, 0.4, p.pos.z + Math.sin(a) * 0.4,
-        Math.cos(a) * 1.5, 0.8 + Math.random(), Math.sin(a) * 1.5,
-        0.4, 1.2, 0.42, 0.37, 0.3, 0.55 + Math.random() * 0.3)
-    }
+    this.enqueueBurst(B_CRATE_PUFFS, 5, p.pos.x, 0.4, p.pos.z)
   }
 
   onPlayerDodge(): void {
@@ -290,13 +436,7 @@ class VfxSystems {
   onSmashImpact(): void {
     this.rings.spawn(0, 0.07, 0, ARENA_RADIUS, 1.4, 0.5, 0.45, 0.38, false, 0.09)
     this.rings.spawn(0, 0.08, 0, ARENA_RADIUS * 0.75, 0.7, 2.6, 0.8, 0.35, true, 0.12)
-    for (let i = 0; i < 16; i++) {
-      const a = (i / 16) * TAU
-      const rr = 5 + Math.random() * 22
-      this.puffs.spawn(Math.cos(a) * rr, 0.5, Math.sin(a) * rr,
-        Math.cos(a) * 4, 1.5 + Math.random() * 1.5, Math.sin(a) * 4,
-        1.4, 2.6, 0.38, 0.34, 0.29, 0.9 + Math.random() * 0.5)
-    }
+    this.enqueueBurst(B_SMASH_PUFFS, 16, 0, 0, 0)
     this.trauma = 1
   }
 
@@ -304,6 +444,9 @@ class VfxSystems {
 
   update(step: number, camera: THREE.Camera, pxScale: number): void {
     const time = world.time
+    // drain queued burst spawns first: particles born this frame still get
+    // integrated by the pool updates below, exactly like the old inline spawns
+    this.drainBursts()
     this.telegraphs.update(time)
     this.fires.update(time, pxScale)
     this.beams.update(time, step)
@@ -360,6 +503,7 @@ class VfxSystems {
   }
 
   reset(): void {
+    this.clearBursts()
     this.telegraphs.clear()
     this.fires.clear()
     this.beams.clear()
@@ -423,11 +567,22 @@ export function Vfx() {
     return () => { for (const off of subs) off() }
   }, [sys])
 
+  // one-time shader warm-up: compiles every pooled (even invisible) material so
+  // the first explosion/telegraph never hitches mid-combat. Runs ASYNC on mount
+  // (menu time, KHR_parallel_shader_compile) instead of a synchronous frame-1
+  // gl.compile — kills the first-frame freeze.
+  const gl = useThree((s) => s.gl)
+  const scene = useThree((s) => s.scene)
+  const camera = useThree((s) => s.camera)
   const warmed = useRef(false)
+  useEffect(() => {
+    gl.compileAsync(scene, camera).then(() => { warmed.current = true }).catch(() => {})
+  }, [gl, scene, camera])
+
   useFrame((state, dt) => {
-    if (!warmed.current) {
-      // one-time shader warm-up: compiles every pooled (even invisible) material
-      // so the first explosion/telegraph never hitches mid-combat
+    if (!warmed.current && useGame.getState().phase !== 'menu') {
+      // gameplay started before the async warm-up resolved — fall back to the
+      // old synchronous compile so pooled shaders still never hitch mid-combat
       warmed.current = true
       state.gl.compile(state.scene, state.camera)
     }

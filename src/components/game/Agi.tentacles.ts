@@ -1,6 +1,7 @@
 'use client'
 import * as THREE from 'three'
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
+import { tierKnobs } from '@/game/quality'
 import type { AgiState } from '@/game/world'
 
 // ─── Eldritch tentacle mass behind the AGI ───────────────────────────────────
@@ -26,7 +27,10 @@ import type { AgiState } from '@/game/world'
 //
 // No shadow casting, no per-frame allocations, geometry built once. Attached
 // to the rig's `bob` group so the whole mass inherits the boss hover bob and
-// hides with the model on death.
+// hides with the model on death. Rendering is single-sided (BackSide — see the
+// material note), the eye loop early-outs outside the eyes' vc span, and the
+// potato tier compiles a TENT_LITE variant (no SDF eyes / single octave / no
+// rim) behind its own program cache key.
 //
 // NaN safety (bloom blacks the screen on a single NaN pixel): no pow() anywhere
 // in injected GLSL — powers are multiplied out; every sqrt gets a +epsilon;
@@ -196,11 +200,17 @@ varying float vTentNy;
 ${GLSL_HELPERS}
 `
 
-// injected over <map_fragment>: sickly skin albedo + SDF eyes in surface space
+// injected over <map_fragment>: sickly skin albedo + SDF eyes in surface space.
+// TENT_LITE (potato tier): no SDF eyes (the 3 hero eyeballs carry the look)
+// and a single noise octave — the second octave collapses to its mean.
 const TENT_FRAG_SURFACE = /* glsl */ `
 vec2 tSurf = vec2(vTentUv.x * 6.2831853 * vTentRad, vTentUv.y * vTentEye.z);
 float tN1 = agiNoise(tSurf * 0.85 + vTentEye.x * 3.71);
+#ifdef TENT_LITE
+float tN2 = 0.5;
+#else
 float tN2 = agiNoise(tSurf * 2.9 + vTentEye.x * 9.13);
+#endif
 float tNn = tN1 * 0.72 + tN2 * 0.28;
 vec3 tSkin = mix(vec3(0.045, 0.075, 0.055), vec3(0.17, 0.23, 0.16), tNn);
 tSkin = mix(tSkin, vec3(0.11, 0.075, 0.13), smoothstep(0.62, 1.0, vTentUv.y) * 0.5);
@@ -212,8 +222,10 @@ float tSkinRough = clamp(0.52 - 0.16 * tRidge + 0.14 * tN2, 0.22, 0.62);
 float tEyeMask = 0.0;
 float tEyeGlow = 0.0;
 vec3 tCol = tSkin;
+#ifndef TENT_LITE
 // tangent frame from screen-space derivatives → pupil look-at offset stays
-// correct on the deforming surface with zero extra attributes
+// correct on the deforming surface with zero extra attributes. All derivative
+// ops stay OUTSIDE the eye-band branch below (uniform control flow).
 vec3 tDpx = dFdx(vTentWP);
 vec3 tDpy = dFdy(vTentWP);
 vec2 tDsx = dFdx(tSurf);
@@ -224,6 +236,9 @@ vec3 tTv = agiSafeN((tDpy * tDsx.x - tDpx * tDsy.x) * tDetS);
 vec2 tLookP = vec2(dot(uTentLook, tTu), dot(uTentLook, tTv));
 float tTid = vTentEye.x;
 float tEyeN = vTentEye.y;
+// eye centers only exist at vc ∈ [0.16, 0.76] (see vc below) with radius ≤ 1m
+// — base and tip fragments skip every SDF iteration (1.5m slack > radius + AA)
+if (tSurf.y > 0.16 * vTentEye.z - 1.5 && tSurf.y < 0.76 * vTentEye.z + 1.5) {
 for (int i = 0; i < 3; i++) {
   float fi = float(i);
   if (fi >= tEyeN - 0.5) break;
@@ -237,7 +252,10 @@ for (int i = 0; i < 3; i++) {
   float dv = (vTentUv.y - vc) * vTentEye.z;
   float dEye = sqrt(du * du + dv * dv + 1e-8);
   float sd = dEye - er;
-  float aa = max(fwidth(sd) * 1.4, 0.004);
+  // analytic pixel footprint of dEye (chain rule over the uniform-flow tSurf
+  // derivatives) — fwidth(sd) would be undefined inside this branch, and a
+  // garbage/NaN width under bloom blacks the whole screen
+  float aa = max((abs(du * tDsx.x + dv * tDsx.y) + abs(du * tDsy.x + dv * tDsy.y)) / dEye * 1.4, 0.004);
   float inEye = 1.0 - smoothstep(-aa, aa, sd);
   if (inEye <= 0.001) continue;
   float open = clamp(uTentEyeOpen * (1.0 - 1.5 * agiBlink(uTentT, tTid * 5.7 + fi * 2.9)), 0.0, 1.0);
@@ -258,6 +276,8 @@ for (int i = 0; i < 3; i++) {
   tEyeMask = max(tEyeMask, openEye);
   tEyeGlow += openEye * (1.0 - max(irisM * 0.75, pupM));
 }
+}
+#endif
 diffuseColor.rgb = tCol;
 `
 
@@ -265,14 +285,20 @@ const TENT_FRAG_ROUGH = /* glsl */ `
 float roughnessFactor = mix(tSkinRough, 0.12, tEyeMask);
 `
 
+// TENT_LITE drops the rim + eye glow but keeps the ambient self-glow — the
+// mass must never read black-on-black at night, even on potato
 const TENT_FRAG_EMISSIVE = /* glsl */ `
 #include <emissivemap_fragment>
+#ifndef TENT_LITE
 vec3 tVdir = agiSafeN(vViewPosition);
 float tRim = 1.0 - abs(dot(tVdir, normal));
 totalEmissiveRadiance += vec3(0.16, 0.24, 0.19) * (tRim * tRim) * 0.5;
+#endif
 // faint ambient self-glow so the mass never reads black-on-black at night
 totalEmissiveRadiance += diffuseColor.rgb * 0.14;
+#ifndef TENT_LITE
 totalEmissiveRadiance += vec3(0.55, 0.50, 0.38) * tEyeGlow * 0.4;
+#endif
 `
 
 // ── hero eyeball shaders (instanced spheres on stalks) ───────────────────────
@@ -438,6 +464,12 @@ function dispInto(out: THREE.Vector3, a: HeroAnchor, ph: number, amp: number, dr
 export interface TentaclesRig {
   group: THREE.Group
   /**
+   * Rest-pose AABB of the merged tentacle geometry (bob-local ≈ world space)
+   * expanded by ~4m of vertex sway amplitude — unioned into the whole-boss
+   * culling sphere by Agi.rig/Agi.tsx.
+   */
+  bounds: THREE.Box3
+  /**
    * Per-frame update (call from the boss frame pass in every phase).
    * `t` = world.time (frozen while paused → tentacles freeze too),
    * `dyingT` = seconds since the death sequence started, or -1.
@@ -596,11 +628,26 @@ export function buildTentacles(): TentaclesRig {
   geo.computeBoundingSphere()
   if (geo.boundingSphere) geo.boundingSphere.radius += 15 // sway + droop headroom
 
+  // rest-pose AABB + sway margin, for the whole-boss culling sphere
+  const bounds = new THREE.Box3().setFromBufferAttribute(geo.getAttribute('position') as THREE.BufferAttribute)
+  bounds.expandByScalar(4)
+
+  // structural knob (read once at build): potato strips the SDF eye loop, the
+  // second noise octave and the rim emissive from the fragment shader
+  const tentLite = tierKnobs().tentLite
+
+  // NOTE side: the ring triangulation winds with front faces pointing INWARD
+  // (verified numerically), so single-sided rendering of the outer skin means
+  // BackSide, not FrontSide. FLIP_SIDED negates the vertex normal exactly like
+  // the DoubleSide back-face path did, so the arena-side look is bit-identical
+  // to the old DoubleSide render — minus every hidden inner-wall fragment.
+  // Bases are buried in the torso and tips are apex-closed, so no open edge
+  // can expose the now-unrendered inside.
   const tentMat = new THREE.MeshStandardMaterial({
     color: 0xffffff, // albedo authored in the fragment shader
     roughness: 0.45,
     metalness: 0,
-    side: THREE.DoubleSide,
+    side: THREE.BackSide,
   })
   tentMat.onBeforeCompile = (shader) => {
     Object.assign(shader.uniforms, uni)
@@ -608,17 +655,20 @@ export function buildTentacles(): TentaclesRig {
     shader.vertexShader = shader.vertexShader
       .replace('#include <beginnormal_vertex>', TENT_VERT_NORMAL)
       .replace('#include <begin_vertex>', TENT_VERT_TRANSFORM)
-    shader.fragmentShader = TENT_FRAG_DECL + shader.fragmentShader
+    shader.fragmentShader = (tentLite ? '#define TENT_LITE\n' : '') + TENT_FRAG_DECL + shader.fragmentShader
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <map_fragment>', TENT_FRAG_SURFACE)
       .replace('#include <roughnessmap_fragment>', TENT_FRAG_ROUGH)
       .replace('#include <emissivemap_fragment>', TENT_FRAG_EMISSIVE)
   }
-  tentMat.customProgramCacheKey = () => 'agi-tentacles'
+  // the key MUST vary with the define — a cached full-fat program would
+  // otherwise be silently reused for the lite material (and vice versa)
+  tentMat.customProgramCacheKey = () => (tentLite ? 'agi-tentacles-lite' : 'agi-tentacles')
 
   const tentMesh = new THREE.Mesh(geo, tentMat)
   tentMesh.castShadow = false
   tentMesh.receiveShadow = false
+  tentMesh.frustumCulled = true // culls via the geometry sphere (+15 sway headroom)
 
   // ── hero eyeballs: 3 instanced spheres on stalks ──────────────────────────
   const sphere = new THREE.SphereGeometry(1, 14, 10)
@@ -644,6 +694,7 @@ export function buildTentacles(): TentaclesRig {
   heroMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
   heroMesh.castShadow = false
   heroMesh.receiveShadow = false
+  heroMesh.frustumCulled = true
   heroMesh.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 30, -70), 32)
 
   const anchors: HeroAnchor[] = HERO_DEFS.map((def) => {
@@ -670,6 +721,7 @@ export function buildTentacles(): TentaclesRig {
   const cur: Mood = { ...MOODS.waves }
   let ph = 0
   let lastT = 0
+  let frozenSynced = false // outputs already synced since the world clock froze
 
   function update(
     t: number, mode: AgiState['mode'], dyingT: number,
@@ -678,6 +730,11 @@ export function buildTentacles(): TentaclesRig {
     // world-clock delta: freezes with the pause menu, self-heals on rewinds
     const dtw = THREE.MathUtils.clamp(t - lastT, 0, 0.05)
     lastT = t
+    // clock frozen (pause/buffSelect): every output below only moves with dtw,
+    // so after one synced pass the uniform + hero-matrix writes are identical
+    // — skip them entirely (mirrors Projectiles' frozenSynced)
+    if (dtw === 0 && frozenSynced) return
+    frozenSynced = dtw === 0
     let target = MOODS[mode]
     if (mode === 'dying' && dyingT >= 1.15) target = LIMP // thrash → hang limp
     const k = 1 - Math.exp(-(mode === 'dying' ? 6 : 2.8) * dtw)
@@ -722,7 +779,8 @@ export function buildTentacles(): TentaclesRig {
     cur.droop = MOODS.waves.droop
     cur.eye = MOODS.waves.eye
     lastT = 0
+    frozenSynced = false
   }
 
-  return { group, update, reset }
+  return { group, bounds, update, reset }
 }

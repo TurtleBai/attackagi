@@ -223,6 +223,15 @@ export interface AgiRig {
   debris: { group: THREE.Group; chunks: THREE.Mesh[] }
   /** eldritch tentacle mass behind the torso (2 draws; driven from Agi.tsx) */
   tentacles: TentaclesRig
+  /**
+   * Tight whole-boss sphere (model space ≈ world space), rewritten every frame
+   * by Agi.tsx from the live arm layout + `staticBounds`. Shared as the
+   * `boundingSphere` of every arm-articulation instanced mesh, and used for
+   * the one per-frame offscreen-work frustum test.
+   */
+  bounds: THREE.Sphere
+  /** build-time head + torso + tentacle extents seeding the per-frame box */
+  staticBounds: THREE.Box3
 }
 
 // ─── build ───────────────────────────────────────────────────────────────────
@@ -237,10 +246,12 @@ export function buildAgiRig(screenMaterial: THREE.ShaderMaterial): AgiRig {
   const bob = new THREE.Group()
   model.add(bob)
 
-  // Generous fixed bounds for world-space-instanced arm parts: the arms sweep
-  // the whole arena, so a static sphere avoids stale per-instance recomputes
-  // while still letting the renderer cull the boss when the player faces away.
-  const armBounds = () => new THREE.Sphere(new THREE.Vector3(0, 15, -20), 100)
+  // ONE tight dynamic sphere shared by every world-space-instanced arm part.
+  // Agi.tsx rewrites it each frame from the real bezier layout + the static
+  // head/torso/tentacle extents, so the whole boss actually frustum-culls.
+  // (The old fixed radius-100 sphere always contained the camera → the boss
+  // never culled, no matter where the player looked.)
+  const bounds = new THREE.Sphere(new THREE.Vector3(0, 22, -58), 60)
 
   // ── HEAD: giant retro monitor ─────────────────────────────────────────────
   const head = new THREE.Group()
@@ -373,6 +384,20 @@ export function buildAgiRig(screenMaterial: THREE.ShaderMaterial): AgiRig {
   const tentacles = buildTentacles()
   bob.add(tentacles.group)
 
+  // Static whole-boss extents (model space): torso block + greebles + engine
+  // cone (x ±20, y 1.5..24, z −78.5..−63), the head as a rotation-safe ±11m
+  // cube around HEAD_CENTER (it yaws/pitches at the player; casing corner +
+  // antenna tips reach ~10.7m), and the tentacle rest AABB (+4m sway margin).
+  // Hover bob (±1.2) and dying shake are covered by the pad Agi.tsx adds when
+  // it folds the live arm layout in and finalizes `bounds` each frame.
+  const staticBounds = new THREE.Box3(
+    new THREE.Vector3(-20, 1.5, -78.5),
+    new THREE.Vector3(20, 24, -63),
+  )
+  staticBounds.expandByPoint(_bakeP.set(HEAD_CENTER.x - 11, HEAD_CENTER.y - 11, HEAD_CENTER.z - 11))
+  staticBounds.expandByPoint(_bakeP.set(HEAD_CENTER.x + 11, HEAD_CENTER.y + 11, HEAD_CENTER.z + 11))
+  staticBounds.union(tentacles.bounds)
+
   // reactor core: additive shader disc (housing merged into the body mesh above)
   const reactorMat = new THREE.ShaderMaterial({
     uniforms: { uTime: { value: 0 }, uHeat: { value: 1 } },
@@ -434,7 +459,8 @@ export function buildAgiRig(screenMaterial: THREE.ShaderMaterial): AgiRig {
     im.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
     im.castShadow = true // arm segments cast
     im.receiveShadow = true
-    im.boundingSphere = armBounds()
+    im.frustumCulled = true
+    im.boundingSphere = bounds // shared, rewritten per frame by Agi.tsx
     model.add(im)
     segs.push(im)
   }
@@ -443,7 +469,8 @@ export function buildAgiRig(screenMaterial: THREE.ShaderMaterial): AgiRig {
     const im = new THREE.InstancedMesh(geo, dark, count)
     im.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
     im.receiveShadow = true
-    im.boundingSphere = armBounds()
+    im.frustumCulled = true
+    im.boundingSphere = bounds // shared, rewritten per frame by Agi.tsx
     model.add(im)
     return im
   }
@@ -464,7 +491,8 @@ export function buildAgiRig(screenMaterial: THREE.ShaderMaterial): AgiRig {
     im.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
     im.castShadow = true // part of the hands
     im.receiveShadow = true
-    im.boundingSphere = armBounds()
+    im.frustumCulled = true
+    im.boundingSphere = bounds // shared, rewritten per frame by Agi.tsx
     model.add(im)
     return im
   }
@@ -717,5 +745,7 @@ export function buildAgiRig(screenMaterial: THREE.ShaderMaterial): AgiRig {
     beam: { group: beamGroup, core: beamCore, sheath: beamSheath, sheathMat, impact: beamImpact, impactMat },
     debris: { group: debrisGroup, chunks },
     tentacles,
+    bounds,
+    staticBounds,
   }
 }

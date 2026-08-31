@@ -48,14 +48,16 @@ export function PerfHud() {
   }, [])
 
   useEffect(() => {
+    if (open) {
+      // fresh timing history so the first visible frame isn't a stale spike
+      s.current.last = 0
+      s.current.frames.length = 0
+    }
     const g = getHandle()
     if (!g) return
     if (open) {
       g.gl.info.autoReset = false
       g.gl.info.reset()
-      // fresh timing history so the first visible frame isn't a stale spike
-      s.current.last = 0
-      s.current.frames.length = 0
     } else {
       g.gl.info.autoReset = true
     }
@@ -92,11 +94,11 @@ export function PerfHud() {
       }
     }
 
-    // resolved tier + adaptive controller state (tolerant of the store shape:
-    // `resolvedQuality` only exists once the adaptive controller has written it)
-    const set = useSettings.getState() as unknown as { quality?: string; resolvedQuality?: string }
+    // resolved tier + adaptive controller state (resolvedQuality is null until
+    // the adaptive controller writes it)
+    const set = useSettings.getState()
     const tierLine =
-      `tier ${resolvedTier()}  set ${set.quality ?? '?'}` +
+      `tier ${resolvedTier()}  set ${set.quality}` +
       (set.resolvedQuality ? `  adaptive ${set.resolvedQuality}` : '')
 
     const avg = st.frames.reduce((a, b) => a + b, 0) / st.frames.length

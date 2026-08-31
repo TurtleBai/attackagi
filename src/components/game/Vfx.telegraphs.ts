@@ -63,7 +63,8 @@ function makeSlots(parent: THREE.Object3D, count: number, circle: boolean): Slot
     const m = circle ? telegraphCircleMaterial() : telegraphRectMaterial()
     const mesh = new THREE.Mesh(geo, m)
     mesh.visible = false
-    mesh.frustumCulled = false
+    // frustum-culled: slots carry real position/scale on unit quads (fills are
+    // fragment-side, no vertex displacement) — offscreen decals skip draw+vertex
     mesh.renderOrder = 10
     parent.add(mesh)
     out.push({ mesh, m, id: -1, seen: 0, lastFill: 0, lastOver: -1, visualOnly: false, orphanUntil: 0 })

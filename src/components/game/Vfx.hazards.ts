@@ -1,5 +1,6 @@
 'use client'
 import * as THREE from 'three'
+import { tierKnobs } from '@/game/quality'
 import { world } from '@/game/world'
 import {
   beamWallMaterial, emberMaterial, fireGlowMaterial, flameMaterial, scorchMaterial, smokeMaterial,
@@ -9,7 +10,8 @@ import {
 // Vfx.hazards — renders world.hazards:
 //  · 'fire'  → layered patch: ground glow disc, instanced fluttering flame
 //              quads, sparse smoke wisps, rising ember points, and up to
-//              FIRE_LIGHTS flickering point lights parked on the biggest fires.
+//              tierKnobs().fireLights flickering point lights parked on the
+//              biggest fires.
 //  · 'beam'  → vertical energy wall a→b (hot core + scrolling noise) plus a
 //              ground scorch line that fades after the beam ends.
 // All pools are fixed-size; unused instances collapse to degenerate triangles
@@ -20,7 +22,6 @@ const MAX_FIRES = 10
 const FLAMES_PER = 8 // was 10 — modest additive-overdraw cut, look preserved
 const SMOKE_PER = 3
 const EMBERS_PER = 7
-const FIRE_LIGHTS = 3
 const FIRE_TAIL = 0.9 // seconds the visuals keep fading after `until`
 
 const MAX_BEAMS = 10
@@ -59,9 +60,22 @@ export class FirePatches {
   private emberCenter: THREE.BufferAttribute
   private emberData: THREE.BufferAttribute
   private lights: THREE.PointLight[] = []
-  private lightPick: Int32Array = new Int32Array(FIRE_LIGHTS)
+  private lightPick: Int32Array
+  // STRUCTURAL tier knobs, read once at mount: potato (vfxDensity < 1) halves
+  // the flame quads per fire and skips smoke wisps entirely; light count comes
+  // from tierKnobs().fireLights. Glow discs + embers stay on every tier so
+  // burning ground hazards remain readable.
+  private flamesPer: number
+  private smokePer: number
+  private fireLights: number
 
   constructor(parent: THREE.Object3D) {
+    const knobs = tierKnobs()
+    const potato = knobs.vfxDensity < 1
+    this.flamesPer = potato ? FLAMES_PER >> 1 : FLAMES_PER
+    this.smokePer = potato ? 0 : SMOKE_PER
+    this.fireLights = knobs.fireLights
+    this.lightPick = new Int32Array(this.fireLights)
     for (let i = 0; i < MAX_FIRES; i++) {
       this.slots.push({ id: -1, until: -100, birth: -100, radius: 1, x: 0, z: 0 })
       const m = fireGlowMaterial()
@@ -77,7 +91,7 @@ export class FirePatches {
 
     // flames
     {
-      const n = MAX_FIRES * FLAMES_PER
+      const n = MAX_FIRES * this.flamesPer
       const geo = new THREE.PlaneGeometry(1, 1)
       this.flameSeed = new THREE.InstancedBufferAttribute(new Float32Array(n), 1)
       this.flameSpan = new THREE.InstancedBufferAttribute(new Float32Array(n * 2).fill(-10), 2)
@@ -94,7 +108,7 @@ export class FirePatches {
     }
     // smoke
     {
-      const n = MAX_FIRES * SMOKE_PER
+      const n = MAX_FIRES * this.smokePer
       const geo = new THREE.PlaneGeometry(1, 1)
       this.smokeData = new THREE.InstancedBufferAttribute(new Float32Array(n * 3).fill(-10), 3)
       this.smokeData.setUsage(THREE.DynamicDrawUsage)
@@ -104,6 +118,7 @@ export class FirePatches {
       this.smoke.count = 0 // raised in update() to cover live slots only
       this.smoke.frustumCulled = false
       this.smoke.renderOrder = 17
+      if (this.smokePer === 0) this.smoke.visible = false // potato: no wisps
       parent.add(this.smoke)
     }
     // embers
@@ -124,7 +139,7 @@ export class FirePatches {
       this.embers.renderOrder = 19
       parent.add(this.embers)
     }
-    for (let i = 0; i < FIRE_LIGHTS; i++) {
+    for (let i = 0; i < this.fireLights; i++) {
       const l = new THREE.PointLight(0xff7a2a, 0, 12, 2)
       l.castShadow = false
       parent.add(l)
@@ -161,8 +176,8 @@ export class FirePatches {
     const sizeK = Math.min(1.5, Math.max(0.7, s.radius / 4.5))
     const flameSpan = this.flameSpan.array as Float32Array
     const flameSeed = this.flameSeed.array as Float32Array
-    for (let k = 0; k < FLAMES_PER; k++) {
-      const i = idx * FLAMES_PER + k
+    for (let k = 0; k < this.flamesPer; k++) {
+      const i = idx * this.flamesPer + k
       const a = Math.random() * Math.PI * 2
       const r = s.radius * 0.78 * Math.sqrt(Math.random())
       const sc = (0.5 + Math.random() * 0.6) * sizeK
@@ -178,8 +193,8 @@ export class FirePatches {
     this.flameSpan.needsUpdate = true
 
     const smokeData = this.smokeData.array as Float32Array
-    for (let k = 0; k < SMOKE_PER; k++) {
-      const i = idx * SMOKE_PER + k
+    for (let k = 0; k < this.smokePer; k++) {
+      const i = idx * this.smokePer + k
       const a = Math.random() * Math.PI * 2
       const r = s.radius * 0.5 * Math.sqrt(Math.random())
       const sc = (0.9 + Math.random() * 0.8) * sizeK
@@ -190,8 +205,10 @@ export class FirePatches {
       smokeData[i * 3 + 1] = time + Math.random() * 0.5
       smokeData[i * 3 + 2] = s.until + 0.6
     }
-    this.smoke.instanceMatrix.needsUpdate = true
-    this.smokeData.needsUpdate = true
+    if (this.smokePer > 0) {
+      this.smoke.instanceMatrix.needsUpdate = true
+      this.smokeData.needsUpdate = true
+    }
 
     const ec = this.emberCenter.array as Float32Array
     const ed = this.emberData.array as Float32Array
@@ -212,17 +229,17 @@ export class FirePatches {
     const s = this.slots[idx]
     s.until = time
     const flameSpan = this.flameSpan.array as Float32Array
-    for (let k = 0; k < FLAMES_PER; k++) {
-      const i = idx * FLAMES_PER + k
+    for (let k = 0; k < this.flamesPer; k++) {
+      const i = idx * this.flamesPer + k
       flameSpan[i * 2 + 1] = Math.min(flameSpan[i * 2 + 1], time + 0.3)
     }
     this.flameSpan.needsUpdate = true
     const smokeData = this.smokeData.array as Float32Array
-    for (let k = 0; k < SMOKE_PER; k++) {
-      const i = idx * SMOKE_PER + k
+    for (let k = 0; k < this.smokePer; k++) {
+      const i = idx * this.smokePer + k
       smokeData[i * 3 + 2] = Math.min(smokeData[i * 3 + 2], time + 0.4)
     }
-    this.smokeData.needsUpdate = true
+    if (this.smokePer > 0) this.smokeData.needsUpdate = true
     const ed = this.emberData.array as Float32Array
     for (let k = 0; k < EMBERS_PER; k++) {
       const i = idx * EMBERS_PER + k
@@ -255,8 +272,8 @@ export class FirePatches {
     // draw calls are skipped outright
     let nLive = 0
     for (let i = 0; i < this.slots.length; i++) if (this.slots[i].id !== -1) nLive = i + 1
-    this.flames.count = nLive * FLAMES_PER
-    this.smoke.count = nLive * SMOKE_PER
+    this.flames.count = nLive * this.flamesPer
+    this.smoke.count = nLive * this.smokePer
     this.embers.geometry.setDrawRange(0, nLive * EMBERS_PER)
 
     this.flameMat.uniforms.uTime.value = time
@@ -284,20 +301,21 @@ export class FirePatches {
     }
 
     // park lights on the biggest live fires
-    for (let k = 0; k < FIRE_LIGHTS; k++) this.lightPick[k] = -1
+    const nLights = this.fireLights
+    for (let k = 0; k < nLights; k++) this.lightPick[k] = -1
     for (let i = 0; i < this.slots.length; i++) {
       const s = this.slots[i]
       if (s.id === -1 || time > s.until + 0.4) continue
-      for (let k = 0; k < FIRE_LIGHTS; k++) {
+      for (let k = 0; k < nLights; k++) {
         const cur = this.lightPick[k]
         if (cur === -1 || this.slots[cur].radius < s.radius) {
-          for (let m = FIRE_LIGHTS - 1; m > k; m--) this.lightPick[m] = this.lightPick[m - 1]
+          for (let m = nLights - 1; m > k; m--) this.lightPick[m] = this.lightPick[m - 1]
           this.lightPick[k] = i
           break
         }
       }
     }
-    for (let k = 0; k < FIRE_LIGHTS; k++) {
+    for (let k = 0; k < nLights; k++) {
       const light = this.lights[k]
       const pick = this.lightPick[k]
       if (pick === -1) { light.intensity = 0; continue }
@@ -349,11 +367,13 @@ export class BeamWalls {
 
   constructor(parent: THREE.Object3D) {
     const quad = new THREE.PlaneGeometry(1, 1)
+    // both pools stay frustum-culled: slots carry real position/rotation/scale
+    // on the shared unit quad (fills are fragment-side, no vertex displacement),
+    // so offscreen walls/scorch skip draw + vertex work entirely
     for (let i = 0; i < MAX_BEAMS; i++) {
       const m = beamWallMaterial()
       const mesh = new THREE.Mesh(quad, m)
       mesh.visible = false
-      mesh.frustumCulled = false
       mesh.renderOrder = 14
       parent.add(mesh)
       this.beams.push({ id: -1, mesh, m, ax: 0, az: 0, bx: 0, bz: 0, width: 1, until: 0 })
@@ -362,7 +382,6 @@ export class BeamWalls {
       const m = scorchMaterial()
       const mesh = new THREE.Mesh(quad, m)
       mesh.visible = false
-      mesh.frustumCulled = false
       mesh.renderOrder = 9
       parent.add(mesh)
       this.scorch.push({ mesh, m, ttl: 0 })

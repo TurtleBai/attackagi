@@ -4,8 +4,9 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Kbd } from '@/components/ui/kbd'
 import { Slider } from '@/components/ui/slider'
+import { resolvedTier } from '@/game/quality'
 import {
-  ACTION_LABELS, keyLabel, useSettings, type BindableAction,
+  ACTION_LABELS, keyLabel, useSettings, type BindableAction, type GraphicsQuality,
 } from '@/game/settings'
 import { useGame } from '@/game/store'
 import { cn } from '@/lib/utils'
@@ -23,6 +24,7 @@ export function PauseScreen() {
   const sensitivity = useSettings((s) => s.lookSensitivity)
   const bindings = useSettings((s) => s.bindings)
   const quality = useSettings((s) => s.quality)
+  const resolvedQuality = useSettings((s) => s.resolvedQuality)
   const [rebinding, setRebinding] = useState<BindableAction | null>(null)
 
   const resume = () => {
@@ -85,8 +87,8 @@ export function PauseScreen() {
 
               <div className="flex flex-col gap-2">
                 <span className="font-mono text-[11px] tracking-[0.18em] text-muted-foreground">GRAPHICS</span>
-                <div className="flex gap-1.5">
-                  {(['smooth', 'pretty'] as const).map((q) => (
+                <div className="grid grid-cols-2 gap-1.5">
+                  {(['auto', 'potato', 'smooth', 'pretty'] as const satisfies readonly GraphicsQuality[]).map((q) => (
                     <button
                       key={q}
                       onClick={() => {
@@ -94,18 +96,22 @@ export function PauseScreen() {
                         useSettings.getState().setQuality(q)
                       }}
                       className={cn(
-                        'flex-1 cursor-pointer rounded-[3px] border py-1.5 font-mono text-[10px] tracking-[0.25em] transition-colors',
+                        'cursor-pointer rounded-[3px] border py-1.5 font-mono text-[10px] tracking-[0.25em] transition-colors',
                         quality === q
                           ? 'border-amber-300/80 bg-amber-400/10 text-amber-200'
                           : 'border-border bg-background/50 text-muted-foreground hover:text-foreground',
                       )}
                     >
-                      {q === 'smooth' ? 'SMOOTH' : 'PRETTY'}
+                      {q === 'auto'
+                        ? quality === 'auto'
+                          ? `AUTO (${(resolvedQuality ?? resolvedTier()).toUpperCase()})`
+                          : 'AUTO'
+                        : q.toUpperCase()}
                     </button>
                   ))}
                 </div>
                 <span className="font-mono text-[9px] tracking-[0.15em] text-muted-foreground/60">
-                  SMOOTH = MAX FPS · PRETTY = FULL AO + AA
+                  AUTO ADAPTS TO FPS · POTATO = MIN SPEC · PRETTY = FULL AO + AA
                 </span>
               </div>
 

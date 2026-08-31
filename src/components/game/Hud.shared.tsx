@@ -28,37 +28,38 @@ interface RafEntry {
 const rafEntries = new Set<RafEntry>()
 let rafList: RafEntry[] = [] // flat snapshot so the tick loop allocates nothing
 let rafId = 0
-let rafActive = false
+let rafScheduled = false
+
+function rafSchedule(): void {
+  if (rafScheduled) return
+  rafScheduled = true
+  rafId = requestAnimationFrame(rafTick)
+}
 
 function rafTick(now: number): void {
-  if (rafEntries.size === 0) {
-    rafActive = false
-    return
-  }
+  rafScheduled = false // this frame has fired; (un)registers below see the truth
+  if (rafEntries.size === 0) return
   const paused = useGame.getState().phase === 'paused'
   for (let i = 0; i < rafList.length; i++) {
     const e = rafList[i]
     if (paused && e.combat) continue
     e.run(now)
   }
-  rafId = requestAnimationFrame(rafTick)
+  if (rafEntries.size > 0) rafSchedule()
 }
 
 function rafRegister(entry: RafEntry): void {
   rafEntries.add(entry)
   rafList = Array.from(rafEntries)
-  if (!rafActive) {
-    rafActive = true
-    rafId = requestAnimationFrame(rafTick)
-  }
+  rafSchedule()
 }
 
 function rafUnregister(entry: RafEntry): void {
   rafEntries.delete(entry)
   rafList = Array.from(rafEntries)
-  if (rafEntries.size === 0 && rafActive) {
+  if (rafEntries.size === 0 && rafScheduled) {
     cancelAnimationFrame(rafId)
-    rafActive = false
+    rafScheduled = false
   }
 }
 

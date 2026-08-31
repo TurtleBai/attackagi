@@ -731,6 +731,7 @@ class AudioEngine {
   /** Enormous floor-smash boom + ~1.5s low rumble tail. */
   smashImpact(): void {
     if (!this.live()) return
+    this.spend(3)
     const t0 = this.now()
     this.burst({
       t0, dur: 0.95, gain: 0.8, attack: 0.004,
@@ -748,6 +749,7 @@ class AudioEngine {
   /** Layered final explosion + slow shimmering riser release. */
   bossDead(): void {
     if (!this.live() || !this.gate('bossDead', 0.5)) return
+    this.spend(4)
     const t0 = this.now()
     this.explosionCore(t0, 2.4, 1, true)
     // shimmering riser: detuned saw pair gliding up with a sine sparkle above
@@ -765,6 +767,7 @@ class AudioEngine {
   /** Two-note dark synth sting. */
   waveStart(): void {
     if (!this.live()) return
+    this.spend(2)
     const t0 = this.now()
     for (const [dt, freq] of [[0, 110], [0.28, 155.56]] as const) {
       for (const det of [-5, 5]) {
@@ -780,6 +783,7 @@ class AudioEngine {
   /** Pleasant ascending chime arp. */
   waveClear(): void {
     if (!this.live()) return
+    this.spend(2)
     const t0 = this.now()
     const notes = [523.25, 659.25, 783.99, 1046.5]
     for (let i = 0; i < notes.length; i++) {

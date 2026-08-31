@@ -52,17 +52,37 @@ export function keyLabel(code: string): string {
   return map[code] ?? code.toUpperCase()
 }
 
-export type GraphicsQuality = 'smooth' | 'pretty'
+export type GraphicsQuality = 'potato' | 'smooth' | 'pretty' | 'auto'
+
+/** A concrete tier — what 'auto' resolves to. Mirrors quality.ts ResolvedTier. */
+export type ConcreteQuality = Exclude<GraphicsQuality, 'auto'>
 
 interface SettingsState {
   lookSensitivity: number // multiplier, 0.3 .. 2.5 (1 = default)
   bindings: Record<BindableAction, string>
-  /** 'smooth' trades AO + render scale for frame rate; 'pretty' is the full pipeline */
+  /**
+   * The USER'S choice (persisted). 'auto' delegates the concrete tier to the
+   * adaptive controller; explicit tiers pin it.
+   */
   quality: GraphicsQuality
+  /**
+   * TRANSIENT (never persisted, see partialize): the concrete tier the adaptive
+   * controller resolved 'auto' to. quality.ts resolvedTier() reads it via
+   * getState() with a 'smooth'/'potato' fallback — keep the field name stable.
+   */
+  resolvedQuality: ConcreteQuality | null
+  /**
+   * TRANSIENT: adaptive render-scale override (an exact dpr within the current
+   * tier's dpr band). null = use the tier's default band. Driven through React
+   * state so R3F Canvas re-configures never stomp it.
+   */
+  adaptiveDpr: number | null
   setSensitivity: (v: number) => void
   /** Bind `code` to `action`. If the code is already bound elsewhere, the two actions swap. */
   setBinding: (action: BindableAction, code: string) => void
   setQuality: (q: GraphicsQuality) => void
+  setResolvedQuality: (q: ConcreteQuality | null) => void
+  setAdaptiveDpr: (v: number | null) => void
   resetDefaults: () => void
 }
 
@@ -71,11 +91,18 @@ export const useSettings = create<SettingsState>()(
     (set, get) => ({
       lookSensitivity: 1,
       bindings: { ...DEFAULT_BINDINGS },
-      quality: 'smooth',
+      quality: 'auto',
+      resolvedQuality: null,
+      adaptiveDpr: null,
 
       setSensitivity: (v) => set({ lookSensitivity: Math.min(2.5, Math.max(0.3, v)) }),
 
-      setQuality: (q) => set({ quality: q }),
+      // manual tier picks drop any adaptive render-scale override (band differs)
+      setQuality: (q) => set({ quality: q, adaptiveDpr: null }),
+
+      setResolvedQuality: (q) => set({ resolvedQuality: q }),
+
+      setAdaptiveDpr: (v) => set({ adaptiveDpr: v }),
 
       setBinding: (action, code) => {
         const b = { ...get().bindings }
@@ -85,9 +112,28 @@ export const useSettings = create<SettingsState>()(
         set({ bindings: b })
       },
 
-      resetDefaults: () => set({ lookSensitivity: 1, bindings: { ...DEFAULT_BINDINGS }, quality: 'smooth' }),
+      resetDefaults: () =>
+        set({ lookSensitivity: 1, bindings: { ...DEFAULT_BINDINGS }, quality: 'auto', adaptiveDpr: null }),
     }),
-    { name: 'attackagi-settings' },
+    {
+      name: 'attackagi-settings',
+      version: 1,
+      // persist only the user's own choices — resolvedQuality/adaptiveDpr are
+      // the adaptive controller's transient outputs
+      partialize: (s) => ({
+        lookSensitivity: s.lookSensitivity,
+        bindings: s.bindings,
+        quality: s.quality,
+      }),
+      migrate: (persisted, version) => {
+        const p = persisted as { lookSensitivity: number; bindings: Record<BindableAction, string>; quality: GraphicsQuality }
+        // v0 persisted 'smooth' as its default — almost always "never chose",
+        // so move those onto adaptive AUTO (which starts at smooth anyway).
+        // Deliberate v0 'pretty' picks are kept.
+        if (version === 0 && (p.quality as string) === 'smooth') p.quality = 'auto'
+        return p
+      },
+    },
   ),
 )
 

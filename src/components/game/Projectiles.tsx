@@ -235,6 +235,14 @@ function makeInstanced(geo: THREE.BufferGeometry, mat: THREE.Material, max: numb
   return m
 }
 
+/** Flag an instanced attribute for upload of only its live span (not the whole
+ *  pool buffer) — the renderer clears the range after the copy. */
+function rangeUpload(attr: THREE.InstancedBufferAttribute, count: number): void {
+  attr.clearUpdateRanges()
+  attr.addUpdateRange(0, count)
+  attr.needsUpdate = true
+}
+
 /** Merged rocket body: tapered hull + red warhead + nozzle ring + 4 fins, one draw call. */
 function buildRocketGeometry(): THREE.BufferGeometry {
   const body = new THREE.CylinderGeometry(0.16, 0.2, 1.0, 10)
@@ -387,6 +395,7 @@ function hardReset(sh: Shared): void {
   lastPuffTime = -1e4
   frozenSynced = false
   ;(sh.smokeBirth.array as Float32Array).fill(-1e4)
+  sh.smokeBirth.clearUpdateRanges() // drop stale per-slot ranges → full upload
   sh.smokeBirth.needsUpdate = true
   sh.smoke.count = 0
   sh.ranger.count = 0
@@ -492,8 +501,13 @@ function spawnPuff(sh: Shared, p: Projectile): void {
   sh.smoke.setMatrixAt(i, _m4)
   ;(sh.smokeBirth.array as Float32Array)[i] = world.time
   ;(sh.smokeSeed.array as Float32Array)[i] = Math.random() * 100
+  // upload only the touched slot; same-frame puffs accumulate ranges and the
+  // renderer merges + clears them after the copy
+  sh.smoke.instanceMatrix.addUpdateRange(i * 16, 16)
   sh.smoke.instanceMatrix.needsUpdate = true
+  sh.smokeBirth.addUpdateRange(i, 1)
   sh.smokeBirth.needsUpdate = true
+  sh.smokeSeed.addUpdateRange(i, 1)
   sh.smokeSeed.needsUpdate = true
   lastPuffTime = world.time
 }
@@ -688,18 +702,19 @@ function syncRender(sh: Shared): void {
   sh.rocket.count = nRocket
   sh.glow.count = nRocket
   // flag uploads only for pools with live instances — idle pools (count 0)
-  // draw nothing, so re-uploading their stale buffers every frame is waste
-  if (nRanger > 0) sh.ranger.instanceMatrix.needsUpdate = true
-  if (nBoss > 0) sh.boss.instanceMatrix.needsUpdate = true
+  // draw nothing, so re-uploading their stale buffers every frame is waste —
+  // and upload only the live span (update ranges), not the whole pool buffer
+  if (nRanger > 0) rangeUpload(sh.ranger.instanceMatrix, nRanger * 16)
+  if (nBoss > 0) rangeUpload(sh.boss.instanceMatrix, nBoss * 16)
   if (nMol > 0) {
-    sh.molotov.instanceMatrix.needsUpdate = true
-    sh.flame.instanceMatrix.needsUpdate = true
-    sh.flameSeed.needsUpdate = true
+    rangeUpload(sh.molotov.instanceMatrix, nMol * 16)
+    rangeUpload(sh.flame.instanceMatrix, nMol * 16)
+    rangeUpload(sh.flameSeed, nMol)
   }
   if (nRocket > 0) {
-    sh.rocket.instanceMatrix.needsUpdate = true
-    sh.glow.instanceMatrix.needsUpdate = true
-    sh.glowSeed.needsUpdate = true
+    rangeUpload(sh.rocket.instanceMatrix, nRocket * 16)
+    rangeUpload(sh.glow.instanceMatrix, nRocket * 16)
+    rangeUpload(sh.glowSeed, nRocket)
   }
 }
 
@@ -715,8 +730,18 @@ function frameProjectiles(elapsed: number, dt: number): void {
   // stay visible (frozen) during pauses without re-uploading unchanged buffers
   if (running || !frozenSynced) syncRender(sh)
   frozenSynced = !running
-  // GPU-aged smoke pool: draw its 288 quads only while a puff can be alive
-  sh.smoke.count = world.time - lastPuffTime < SMOKE_LIFE + 0.05 ? SMOKE_POOL : 0
+  // GPU-aged smoke pool: draw only up to the highest slot whose puff can still
+  // be alive (mirrors the FirePatches nLive pattern) — dead puffs inside the
+  // span are collapsed by the shader, slots above it skip vertex work entirely
+  if (world.time - lastPuffTime < SMOKE_LIFE + 0.05) {
+    const births = sh.smokeBirth.array as Float32Array
+    const cutoff = world.time - SMOKE_LIFE - 0.05
+    let n = SMOKE_POOL
+    while (n > 0 && births[n - 1] <= cutoff) n--
+    sh.smoke.count = n
+  } else {
+    sh.smoke.count = 0
+  }
   sh.flameMat.uniforms.uTime.value = elapsed
   sh.glowMat.uniforms.uTime.value = elapsed
   sh.smokeMat.uniforms.uTime.value = world.time

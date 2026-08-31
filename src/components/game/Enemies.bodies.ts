@@ -214,9 +214,21 @@ export const DRONE_GLOW = 0xb26bff
 
 const templates = new Map<EnemyKind, THREE.Group>()
 
-function meshOf(geo: THREE.BufferGeometry, mat: THREE.Material, matKey: 'chassis' | 'dark', cast = true): THREE.Mesh {
+/**
+ * `hull` marks a SILHOUETTE part: only these get straggler-outline shells
+ * (rim + x-ray) in Enemies.instanced.ts. Tag legs/torso/head/weapon/shield —
+ * the parts whose edges define the robot's read — and skip interior greeble
+ * merges (bezels, vents, backpacks) whose outlines hide inside the big hulls
+ * anyway. Explicit tags beat a size threshold here because greeble merges span
+ * the same bounding volume as the casings they decorate.
+ */
+function meshOf(
+  geo: THREE.BufferGeometry, mat: THREE.Material, matKey: 'chassis' | 'dark',
+  cast = true, hull = false,
+): THREE.Mesh {
   const m = new THREE.Mesh(geo, mat)
   m.userData.matKey = matKey
+  m.userData.hull = hull
   m.castShadow = cast
   m.receiveShadow = cast
   return m
@@ -247,8 +259,8 @@ function buildTemplate(kind: EnemyKind): THREE.Group {
     const hipY = 1.06
     const legL = grp('legL', 0.2, hipY, 0, root)
     const legR = grp('legR', -0.2, hipY, 0, root)
-    legL.add(meshOf(legGeo('lean', hipY, 0.85, 1), dark, 'dark'))
-    legR.add(meshOf(legGeo('lean', hipY, 0.85, -1), dark, 'dark'))
+    legL.add(meshOf(legGeo('lean', hipY, 0.85, 1), dark, 'dark', true, true))
+    legR.add(meshOf(legGeo('lean', hipY, 0.85, -1), dark, 'dark', true, true))
     const pelvis = meshOf(mergeParts('meleePelvis:c', [
       { g: bevelBox(0.56, 0.3, 0.4, 0.05), p: [0, 0, 0] },
       { g: bevelBox(0.2, 0.24, 0.34, 0.03), p: [0.3, -0.02, 0] }, // hip guards
@@ -268,7 +280,7 @@ function buildTemplate(kind: EnemyKind): THREE.Group {
       { g: bevelBox(0.12, 0.42, 0.34, 0.03), p: [0.4, 0.02, 0.02] }, // side armor
       { g: bevelBox(0.12, 0.42, 0.34, 0.03), p: [-0.4, 0.02, 0.02] },
       { g: bevelBox(0.46, 0.26, 0.34, 0.04), p: [0, -0.26, 0] }, // abdomen
-    ]), chassis, 'chassis'))
+    ]), chassis, 'chassis', true, true))
     torso.add(meshOf(mergeParts('meleeTorso:d', [
       { g: cyl(0.13, 0.15, 0.12, 10), p: [0, 0.44, 0] }, // collar
       { g: cyl(0.16, 0.18, 0.14, 10), p: [0, -0.42, 0] }, // waist joint
@@ -283,7 +295,7 @@ function buildTemplate(kind: EnemyKind): THREE.Group {
     head.add(meshOf(mergeParts('meleeHead:c', [
       { g: bevelBox(0.26, 0.36, 0.28, 0.035), p: [0, 0, -0.02] }, // vertical casing
       { g: bevelBox(0.3, 0.1, 0.3, 0.03), p: [0, 0.2, -0.02] }, // armored crown
-    ]), chassis, 'chassis'))
+    ]), chassis, 'chassis', true, true))
     head.add(meshOf(mergeParts('meleeHead:d', [
       { g: bevelBox(0.21, 0.31, 0.05, 0.015), p: [0, 0, 0.115] }, // screen bezel
       { g: bevelBox(0.06, 0.34, 0.26, 0.02), p: [0.15, 0, -0.03] }, // cheek guards
@@ -302,7 +314,7 @@ function buildTemplate(kind: EnemyKind): THREE.Group {
       { g: bevelBox(0.16, 0.05, 0.08, 0.015), p: [0, -0.03, 0] }, // guard
       { g: bevelBox(0.035, 0.86, 0.13, 0.014), p: [0, -0.5, 0] }, // blade core
       { g: bevelBox(0.05, 0.1, 0.16, 0.015), p: [0, -0.95, -0.01] }, // tip mass
-    ]), dark, 'dark'))
+    ]), dark, 'dark', true, true))
     const edge = glowMesh(boxG(0.045, 0.82, 0.024), 0xff5a2a, 2.8, 'blade')
     edge.position.set(0, -0.5, 0.07)
     weapon.add(edge)
@@ -313,8 +325,8 @@ function buildTemplate(kind: EnemyKind): THREE.Group {
     const hipY = 1.02
     const legL = grp('legL', 0.19, hipY, 0, root)
     const legR = grp('legR', -0.19, hipY, 0, root)
-    legL.add(meshOf(legGeo('slim', hipY, 0.75, 1), dark, 'dark'))
-    legR.add(meshOf(legGeo('slim', hipY, 0.75, -1), dark, 'dark'))
+    legL.add(meshOf(legGeo('slim', hipY, 0.75, 1), dark, 'dark', true, true))
+    legR.add(meshOf(legGeo('slim', hipY, 0.75, -1), dark, 'dark', true, true))
     legL.rotation.x = 0.3 // braced: one foot forward…
     legR.rotation.x = -0.24 // …one back
     root.position.y = -0.045
@@ -337,7 +349,7 @@ function buildTemplate(kind: EnemyKind): THREE.Group {
       { g: bevelBox(0.1, 0.36, 0.3, 0.025), p: [0.34, 0.04, 0.01] }, // side armor
       { g: bevelBox(0.1, 0.36, 0.3, 0.025), p: [-0.34, 0.04, 0.01] },
       { g: bevelBox(0.4, 0.22, 0.3, 0.035), p: [0, -0.25, 0] }, // abdomen
-    ]), chassis, 'chassis'))
+    ]), chassis, 'chassis', true, true))
     torso.add(meshOf(mergeParts('rangerTorso:d', [
       { g: cyl(0.11, 0.13, 0.1, 10), p: [0, 0.4, 0] },
       { g: cyl(0.13, 0.15, 0.12, 10), p: [0, -0.38, 0] },
@@ -352,7 +364,7 @@ function buildTemplate(kind: EnemyKind): THREE.Group {
     head.add(meshOf(mergeParts('rangerHead:c', [
       { g: bevelBox(0.36, 0.22, 0.26, 0.03), p: [0, 0, -0.01] }, // wide visor casing
       { g: bevelBox(0.4, 0.08, 0.28, 0.025), p: [0, 0.13, -0.01] }, // crown plate
-    ]), chassis, 'chassis'))
+    ]), chassis, 'chassis', true, true))
     head.add(meshOf(mergeParts('rangerHead:d', [
       { g: bevelBox(0.33, 0.145, 0.05, 0.015), p: [0, -0.015, 0.105] }, // screen bezel
       { g: bevelBox(0.16, 0.05, 0.08, 0.015), p: [0.09, 0.085, 0.1], r: [0, 0, -0.12] }, // twin brows
@@ -376,7 +388,7 @@ function buildTemplate(kind: EnemyKind): THREE.Group {
       { g: boxG(0.04, 0.06, 0.04), p: [0, 0.09, 0.1] }, // sight
       ...bakeGrip(weapon, armR, [0, -0.11, 0], 0.42, 0.8), // trigger hand
       ...bakeGrip(weapon, armL, [0, -0.05, 0.2], 0.42, 0.8), // foregrip hand
-    ]), dark, 'dark'))
+    ]), dark, 'dark', true, true))
     armL.add(meshOf(upperArmGeo('slim', 0.42, 0.8), dark, 'dark'))
     armR.add(meshOf(upperArmGeo('slim', 0.42, 0.8), dark, 'dark'))
     const muzzleGlow = glowMesh(cyl(0.032, 0.032, 0.05, 8), 0x66d8ff, 1.4, 'muzzle')
@@ -394,8 +406,8 @@ function buildTemplate(kind: EnemyKind): THREE.Group {
     const hipY = 0.88
     const legL = grp('legL', 0.32, hipY, 0, root)
     const legR = grp('legR', -0.32, hipY, 0, root)
-    legL.add(meshOf(legGeo('heavy', hipY, 1.35, 1), dark, 'dark'))
-    legR.add(meshOf(legGeo('heavy', hipY, 1.35, -1), dark, 'dark'))
+    legL.add(meshOf(legGeo('heavy', hipY, 1.35, 1), dark, 'dark', true, true))
+    legR.add(meshOf(legGeo('heavy', hipY, 1.35, -1), dark, 'dark', true, true))
     for (const [lg, sx] of [[legL, 1], [legR, -1]] as const) {
       const plate = meshOf(bevelBox(0.3, 0.4, 0.26, 0.035), chassis, 'chassis')
       plate.position.set(sx * 0.02, -0.24, 0.16)
@@ -418,7 +430,7 @@ function buildTemplate(kind: EnemyKind): THREE.Group {
       { g: bevelBox(0.72, 0.46, 0.12, 0.04), p: [0, 0.04, 0.36] }, // front plate
       { g: bevelBox(0.16, 0.5, 0.56, 0.04), p: [0.58, -0.02, 0] }, // side armor
       { g: bevelBox(0.16, 0.5, 0.56, 0.04), p: [-0.58, -0.02, 0] },
-    ]), chassis, 'chassis'))
+    ]), chassis, 'chassis', true, true))
     torso.add(meshOf(mergeParts('tankTorso:d', [
       { g: cyl(0.06, 0.07, 0.34, 8), p: [0.36, 0.56, -0.2] }, // exhaust stacks
       { g: cyl(0.06, 0.07, 0.28, 8), p: [-0.36, 0.53, -0.2] },
@@ -432,7 +444,7 @@ function buildTemplate(kind: EnemyKind): THREE.Group {
     head.add(meshOf(mergeParts('tankHead:c', [
       { g: bevelBox(0.44, 0.2, 0.34, 0.035), p: [0, 0, -0.02] }, // low slab casing
       { g: bevelBox(0.5, 0.08, 0.4, 0.03), p: [0, 0.12, -0.03] }, // armored cowl overhang
-    ]), chassis, 'chassis'))
+    ]), chassis, 'chassis', true, true))
     head.add(meshOf(mergeParts('tankHead:d', [
       { g: bevelBox(0.37, 0.13, 0.05, 0.015), p: [0, -0.01, 0.145] }, // screen bezel
       { g: bevelBox(0.1, 0.16, 0.3, 0.02), p: [0.24, 0, -0.03] }, // side cheeks
@@ -463,7 +475,7 @@ function buildTemplate(kind: EnemyKind): THREE.Group {
       { g: bevelBox(1.52, 0.12, 0.18, 0.025), p: [0, -0.92, 0.02], r: [0.18, 0, 0] }, // skid
       { g: cyl(0.12, 0.15, 0.09, 14), p: [0, 0.12, 0.07], r: [Math.PI / 2, 0, 0] }, // boss hub
       ...rivets,
-    ]), dark, 'dark'))
+    ]), dark, 'dark', true, true))
     const inset = meshOf(bevelBox(0.95, 1.15, 0.05, 0.025), chassis, 'chassis', false)
     inset.position.set(0, -0.12, 0.06)
     shield.add(inset)
@@ -477,8 +489,8 @@ function buildTemplate(kind: EnemyKind): THREE.Group {
     const hipY = 1.04
     const legL = grp('legL', 0.18, hipY, 0, root)
     const legR = grp('legR', -0.18, hipY, 0, root)
-    legL.add(meshOf(legGeo('slim', hipY, 0.7, 1), dark, 'dark'))
-    legR.add(meshOf(legGeo('slim', hipY, 0.7, -1), dark, 'dark'))
+    legL.add(meshOf(legGeo('slim', hipY, 0.7, 1), dark, 'dark', true, true))
+    legR.add(meshOf(legGeo('slim', hipY, 0.7, -1), dark, 'dark', true, true))
     legL.rotation.x = 0.24
     legR.rotation.x = -0.2
     root.position.y = -0.03
@@ -499,7 +511,7 @@ function buildTemplate(kind: EnemyKind): THREE.Group {
       { g: bevelBox(0.09, 0.32, 0.26, 0.022), p: [0.3, 0.04, 0.01] }, // side armor
       { g: bevelBox(0.09, 0.32, 0.26, 0.022), p: [-0.3, 0.04, 0.01] },
       { g: bevelBox(0.36, 0.2, 0.26, 0.03), p: [0, -0.26, 0] }, // abdomen
-    ]), chassis, 'chassis'))
+    ]), chassis, 'chassis', true, true))
     torso.add(meshOf(mergeParts('sniperTorso:d', [
       { g: cyl(0.1, 0.12, 0.1, 10), p: [0, 0.42, 0] },
       { g: cyl(0.12, 0.14, 0.11, 10), p: [0, -0.38, 0] },
@@ -513,7 +525,7 @@ function buildTemplate(kind: EnemyKind): THREE.Group {
     head.add(meshOf(mergeParts('sniperHead:c', [
       { g: bevelBox(0.34, 0.26, 0.26, 0.035), p: [0, 0, -0.01] }, // casing
       { g: bevelBox(0.38, 0.08, 0.28, 0.025), p: [0, 0.15, -0.01] }, // crown plate
-    ]), chassis, 'chassis'))
+    ]), chassis, 'chassis', true, true))
     head.add(meshOf(mergeParts('sniperHead:d', [
       { g: bevelBox(0.17, 0.21, 0.05, 0.015), p: [-0.075, 0, 0.105] }, // screen bezel
       { g: cyl(0.115, 0.13, 0.18, 14), p: [0.085, 0.01, 0.13], r: [Math.PI / 2, 0, 0] }, // scope housing
@@ -540,7 +552,7 @@ function buildTemplate(kind: EnemyKind): THREE.Group {
       { g: boxG(0.045, 0.12, 0.06), p: [0, -0.1, 0.02] }, // grip
       ...bakeGrip(weapon, armR, [0, -0.09, 0.02], 0.4, 0.72), // trigger hand
       ...bakeGrip(weapon, armL, [0, -0.02, 0.24], 0.4, 0.72), // foregrip hand under the shroud
-    ]), dark, 'dark'))
+    ]), dark, 'dark', true, true))
     armL.add(meshOf(upperArmGeo('sniper', 0.4, 0.72), dark, 'dark'))
     armR.add(meshOf(upperArmGeo('sniper', 0.4, 0.72), dark, 'dark'))
     const muzzleGlow = glowMesh(cyl(0.028, 0.028, 0.04, 8), 0x4dff8f, 1.3, 'muzzle')
@@ -568,7 +580,7 @@ function buildTemplate(kind: EnemyKind): THREE.Group {
       { g: bevelBox(0.3, 0.13, 0.2, 0.03), p: [0, 0.02, 0.42] }, // sensor prow
       { g: bevelBox(0.16, 0.2, 0.44, 0.028), p: [0.31, 0.02, -0.04] }, // cheek sponsons
       { g: bevelBox(0.16, 0.2, 0.44, 0.028), p: [-0.31, 0.02, -0.04] },
-    ]), chassis, 'chassis'))
+    ]), chassis, 'chassis', true, true))
     head.add(meshOf(mergeParts('dronePod:d', [
       { g: bevelBox(0.27, 0.18, 0.06, 0.015), p: [0, 0, 0.38] }, // screen bezel
       { g: boxG(0.4, 0.055, 0.09), p: [0, 0.115, 0.36] }, // sensor brow housing
@@ -602,7 +614,7 @@ function buildTemplate(kind: EnemyKind): THREE.Group {
       { g: boxG(0.25, 0.04, 0.06), p: [0, 0.22, 0.16] }, // rack cross members
       { g: boxG(0.25, 0.04, 0.06), p: [0, 0.22, -0.16] },
     )
-    root.add(meshOf(mergeParts('droneFrame:d', frame), dark, 'dark'))
+    root.add(meshOf(mergeParts('droneFrame:d', frame), dark, 'dark', true, true))
     root.add(glowMesh(mergeParts('droneRings:g', rings), DRONE_GLOW, 2.2, 'trim'))
     // belly package: nav light + exposed power core — flashes on bomb release
     root.add(glowMesh(mergeParts('droneBelly:g', [
@@ -653,6 +665,8 @@ export interface TemplatePart {
   mesh: THREE.Mesh
   /** material bucket: 'chassis' | 'dark' | 'glow:<key>' */
   bucket: string
+  /** silhouette part: gets straggler-outline hull shells (glow bits never do) */
+  hull: boolean
 }
 
 export interface KindRig {
@@ -697,7 +711,7 @@ export function getKindRig(kind: EnemyKind): KindRig {
     const mesh = o as THREE.Mesh
     if (!mesh.isMesh) return
     const bucket = (mesh.userData.matKey as string | undefined) ?? 'dark'
-    parts.push({ mesh, bucket })
+    parts.push({ mesh, bucket, hull: mesh.userData.hull === true && !bucket.startsWith('glow:') })
     if (bucket.startsWith('glow:')) {
       const key = bucket.slice(5)
       if (!glowKeys.includes(key)) glowKeys.push(key)

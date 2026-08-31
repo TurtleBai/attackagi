@@ -57,6 +57,38 @@ const _q2 = new THREE.Quaternion()
 const _s = new THREE.Vector3()
 const _pp = new THREE.Vector3()
 const _c = new THREE.Color()
+// dynamic whole-boss bounds accumulator + offscreen-gate frustum scratch
+const _bMin = new THREE.Vector3()
+const _bMax = new THREE.Vector3()
+const _frustum = new THREE.Frustum()
+const _projScreen = new THREE.Matrix4()
+const _camInv = new THREE.Matrix4()
+
+// ─── partial-buffer uploads ──────────────────────────────────────────────────
+// Attach an update range covering only the touched span, reusing one retained
+// range object per attribute (three clears `updateRanges` after each consumed
+// upload, and addUpdateRange() would allocate every frame). If the previous
+// range is still pending (mesh was frustum-culled), widen it instead so no
+// dirty span is ever dropped.
+const _ranges = new WeakMap<THREE.BufferAttribute, { start: number; count: number }>()
+function pushUpdateRange(attr: THREE.BufferAttribute, start: number, count: number): void {
+  let r = _ranges.get(attr)
+  if (!r) {
+    r = { start: 0, count: 0 }
+    _ranges.set(attr, r)
+  }
+  const arr = attr.updateRanges as { start: number; count: number }[]
+  if (arr.length > 0 && arr[arr.length - 1] === r) {
+    const end = Math.max(r.start + r.count, start + count)
+    r.start = Math.min(r.start, start)
+    r.count = end - r.start
+  } else {
+    r.start = start
+    r.count = count
+    arr.push(r)
+  }
+  attr.needsUpdate = true
+}
 
 // ─── local state ─────────────────────────────────────────────────────────────
 
@@ -134,6 +166,14 @@ interface Local {
   sparkOn: [boolean, boolean]
   sparkPos: [THREE.Vector3, THREE.Vector3]
   cargoCount: [number, number]
+  /** arm layout already synced + converged since the world clock froze */
+  frozenSynced: boolean
+  /** finger groups moved since the last instance-buffer sync (offscreen skips) */
+  fingersDirty: boolean
+  /** world.time of the last LED color write (skip identical rewrites) */
+  ledSyncT: number
+  /** last frame's whole-boss frustum test (gates visual-only work) */
+  bossOnScreen: boolean
 }
 
 function makeArm(side: number): ArmCtl {
@@ -193,6 +233,10 @@ function makeLocal(): Local {
     sparkOn: [false, false],
     sparkPos: [new THREE.Vector3(), new THREE.Vector3()],
     cargoCount: [0, 0],
+    frozenSynced: false,
+    fingersDirty: true,
+    ledSyncT: -1,
+    bossOnScreen: true,
   }
 }
 
@@ -866,7 +910,8 @@ function updateBoss(S: Local, rig: AgiRig, g: ReturnType<typeof useGame.getState
 
 // ─── per-frame visual pass (runs in every phase) ─────────────────────────────
 
-function orientHand(ctl: ArmCtl, hand: THREE.Group, tangent: THREE.Vector3, step: number): void {
+/** Returns true when the hand orientation has converged onto its target. */
+function orientHand(ctl: ArmCtl, hand: THREE.Group, tangent: THREE.Vector3, step: number): boolean {
   _f.copy(tangent)
   if (ctl.aim) _f.copy(ctl.aim).sub(hand.position).normalize()
   else if (ctl.pointDir) _f.copy(ctl.pointDir)
@@ -890,9 +935,15 @@ function orientHand(ctl: ArmCtl, hand: THREE.Group, tangent: THREE.Vector3, step
   _q.setFromRotationMatrix(_m4)
   hand.quaternion.slerp(_q, 1 - Math.exp(-9 * step))
   ctl.fingerDir.copy(_f)
+  return hand.quaternion.angleTo(_q) < 0.0015
 }
 
-function layoutArm(ctl: ArmCtl, rig: AgiRig, armIdx: number, rootPos: THREE.Vector3, step: number): void {
+/**
+ * Lays the arm's bezier out into the shared instance buffers, expands the
+ * frame's whole-boss bounds accumulator (_bMin/_bMax) over every sample, and
+ * returns true when position + orientation have converged onto their goals.
+ */
+function layoutArm(ctl: ArmCtl, rig: AgiRig, armIdx: number, rootPos: THREE.Vector3, step: number): boolean {
   ctl.cur.lerp(ctl.goal, 1 - Math.exp(-ctl.rate * step))
   if (ctl.cur.y < 0.6) ctl.cur.y = 0.6
   // quadratic bezier: shoulder → raised/outward elbow → hand
@@ -905,11 +956,20 @@ function layoutArm(ctl: ArmCtl, rig: AgiRig, armIdx: number, rootPos: THREE.Vect
     const a = (1 - u) * (1 - u)
     const b = 2 * (1 - u) * u
     const c = u * u
-    ctl.pts[i].set(
+    const p = ctl.pts[i]
+    p.set(
       a * rootPos.x + b * _eb.x + c * ctl.cur.x,
       a * rootPos.y + b * _eb.y + c * ctl.cur.y,
       a * rootPos.z + b * _eb.z + c * ctl.cur.z,
     )
+    // dynamic bounds: every bezier sample, padded by the fattest segment.
+    // The hand sample gets a bigger pad below (fingers/cannon reach ~9m).
+    if (p.x - 1.8 < _bMin.x) _bMin.x = p.x - 1.8
+    if (p.x + 1.8 > _bMax.x) _bMax.x = p.x + 1.8
+    if (p.y - 1.8 < _bMin.y) _bMin.y = p.y - 1.8
+    if (p.y + 1.8 > _bMax.y) _bMax.y = p.y + 1.8
+    if (p.z - 1.8 < _bMin.z) _bMin.z = p.z - 1.8
+    if (p.z + 1.8 > _bMax.z) _bMax.z = p.z + 1.8
   }
   const nJoint = ARM_SEGMENTS - 1
   for (let i = 0; i < ARM_SEGMENTS; i++) {
@@ -941,8 +1001,16 @@ function layoutArm(ctl: ArmCtl, rig: AgiRig, armIdx: number, rootPos: THREE.Vect
   rig.shoulders.setMatrixAt(armIdx, _m4)
   const hand = rig.arms[armIdx].hand.group
   hand.position.copy(ctl.cur)
+  // hand sample pad: fingers ~5.5m, morphed cannon + charge sphere ~8.5m
+  if (ctl.cur.x - 9 < _bMin.x) _bMin.x = ctl.cur.x - 9
+  if (ctl.cur.x + 9 > _bMax.x) _bMax.x = ctl.cur.x + 9
+  if (ctl.cur.y - 9 < _bMin.y) _bMin.y = ctl.cur.y - 9
+  if (ctl.cur.y + 9 > _bMax.y) _bMax.y = ctl.cur.y + 9
+  if (ctl.cur.z - 9 < _bMin.z) _bMin.z = ctl.cur.z - 9
+  if (ctl.cur.z + 9 > _bMax.z) _bMax.z = ctl.cur.z + 9
   _d.copy(ctl.pts[ARM_SEGMENTS]).sub(ctl.pts[ARM_SEGMENTS - 1]).normalize()
-  orientHand(ctl, hand, _d, step)
+  const oriented = orientHand(ctl, hand, _d, step)
+  return oriented && ctl.cur.distanceToSquared(ctl.goal) < 1e-4
 }
 
 /**
@@ -963,7 +1031,8 @@ function syncFingerInstances(rig: AgiRig): void {
       writeWorldInstance(rig.fingerLevels[2], idx, fr.tip, mp)
     }
   }
-  for (const lv of rig.fingerLevels) lv.instanceMatrix.needsUpdate = true
+  // all 8 fingers are always live → range the full 8×mat4 span explicitly
+  for (const lv of rig.fingerLevels) pushUpdateRange(lv.instanceMatrix, 0, 8 * 16)
 }
 
 function writeWorldInstance(im: THREE.InstancedMesh, idx: number, o: THREE.Object3D, modelPos: THREE.Vector3): void {
@@ -975,12 +1044,15 @@ function writeWorldInstance(im: THREE.InstancedMesh, idx: number, o: THREE.Objec
   im.setMatrixAt(idx, _m4)
 }
 
-function updateHand(ctl: ArmCtl, rig: ArmRig, step: number): void {
+/** Returns true when curls/spread/flat/morph/spin/flash have all converged. */
+function updateHand(ctl: ArmCtl, rig: ArmRig, step: number): boolean {
   const k = 1 - Math.exp(-10 * step)
   const forceFist = ctl.morph > 0.25
+  let settled = true
   for (let f = 0; f < 4; f++) {
     const goal = forceFist ? 1.3 : ctl.curlGoal[f]
     ctl.curl[f] += (goal - ctl.curl[f]) * k
+    if (Math.abs(ctl.curl[f] - goal) >= 2e-3) settled = false
     const c = ctl.curl[f]
     const fr = rig.hand.fingers[f]
     fr.root.rotation.x = -(0.1 + c * 0.85)
@@ -1006,9 +1078,15 @@ function updateHand(ctl: ArmCtl, rig: ArmRig, step: number): void {
   mg.flashMat.opacity = Math.min(1, ctl.flash)
   cn.charge.scale.setScalar(0.01 + ctl.charge * 1.5)
   cn.chargeMat.opacity = THREE.MathUtils.clamp(ctl.charge, 0, 1)
+  return settled &&
+    Math.abs(ctl.spread - (forceFist ? 0.1 : ctl.spreadGoal)) < 1e-3 &&
+    Math.abs(ctl.flat - ctl.flatGoal) < 1e-3 &&
+    Math.abs(ctl.morph - ctl.morphGoal) < 1e-3 &&
+    Math.abs(ctl.spinRate) < 1e-3 && Math.abs(ctl.spinRateGoal) < 1e-3 &&
+    ctl.flash < 1e-3
 }
 
-function updateVisuals(S: Local, rig: AgiRig, t: number, step: number): void {
+function updateVisuals(S: Local, rig: AgiRig, t: number, step: number, timeFrozen: boolean, camera: THREE.Camera): void {
   // hover bob + hit recoil
   const bobY = Math.sin(t * 0.5) * 0.9 + Math.sin(t * 1.13) * 0.25
   rig.bob.position.y = bobY
@@ -1035,60 +1113,116 @@ function updateVisuals(S: Local, rig: AgiRig, t: number, step: number): void {
   S.headYaw += (targetYaw - S.headYaw) * hk
   S.headPitch += (targetPitch - S.headPitch) * hk
   rig.head.rotation.set(S.headPitch, S.headYaw, S.dying ? (Math.random() - 0.5) * 0.1 : 0)
-  // arms (world-space layout; shoulder roots follow the bobbing body)
+  // ── arms (world-space layout; shoulder roots follow the bobbing body) ──
+  // FROZEN GUARD: while the world clock is stopped (pause/buffSelect) and all
+  // arm goals have converged, the layout is a fixed point — after one synced
+  // pass, skip the bezier/instance-write/upload work until the clock moves
+  // again (mirrors Projectiles' frozenSynced). Recoil eases with render dt,
+  // so the guard waits for it to die out too.
+  const armsFrozen = timeFrozen && S.frozenSynced && S.recoil < 1e-3
+  if (!armsFrozen) {
+    // seed the frame's whole-boss bounds from the static head/torso/tentacle
+    // extents; layoutArm expands them over every live bezier sample
+    _bMin.copy(rig.staticBounds.min)
+    _bMax.copy(rig.staticBounds.max)
+    let settled = true
+    for (let i = 0; i < 2; i++) {
+      _root.copy(SHOULDER_LOCAL[i])
+      _root.y += bobY
+      _root.z += rig.bob.position.z
+      if (!layoutArm(S.arms[i], rig, i, _root, step)) settled = false
+      if (!updateHand(S.arms[i], rig.arms[i], step)) settled = false
+    }
+    S.frozenSynced = timeFrozen && settled && S.recoil < 1e-3
+    S.fingersDirty = true
+    // flush the shared arm instance buffers written by layoutArm (the flags
+    // persist while culled, so nothing is stale when the boss re-enters view)
+    for (const im of rig.segs) im.instanceMatrix.needsUpdate = true
+    rig.collars.instanceMatrix.needsUpdate = true
+    rig.loops.instanceMatrix.needsUpdate = true
+    rig.shoulders.instanceMatrix.needsUpdate = true
+    // finalize the tight shared culling sphere; +2m pad covers hover bob,
+    // dying shake and one frame of camera latency
+    const c = rig.bounds.center
+    c.set((_bMin.x + _bMax.x) * 0.5, (_bMin.y + _bMax.y) * 0.5, (_bMin.z + _bMax.z) * 0.5)
+    rig.bounds.radius = c.distanceTo(_bMax) + 2
+  }
   for (let i = 0; i < 2; i++) {
-    _root.copy(SHOULDER_LOCAL[i])
-    _root.y += bobY
-    _root.z += rig.bob.position.z
-    layoutArm(S.arms[i], rig, i, _root, step)
-    updateHand(S.arms[i], rig.arms[i], step)
     const hand = rig.arms[i].hand
     const cc = S.cargoCount[i]
     hand.cargo.visible = cc > 0
     hand.cargoBodies.count = cc
     hand.cargoEyes.count = cc
   }
-  // flush the shared arm instance buffers written by layoutArm
-  for (const im of rig.segs) im.instanceMatrix.needsUpdate = true
-  rig.collars.instanceMatrix.needsUpdate = true
-  rig.loops.instanceMatrix.needsUpdate = true
-  rig.shoulders.instanceMatrix.needsUpdate = true
-  syncFingerInstances(rig)
-  // idle machinery: fan, LEDs, reactor
-  rig.fan.rotation.x += step * (world.agi.mode === 'fighting' ? 15 : 6)
-  for (const led of rig.leds) {
-    const on = Math.sin(t * 3.1 + led.phase) > 0.05 ? 1 : 0.22
-    led.mesh.setColorAt(led.index, _c.copy(led.base).multiplyScalar(on))
+
+  // ── OFFSCREEN WORK GATE: one frustum test against the whole-boss sphere.
+  // Everything below the gate is visual-only — gameplay state (arm layout,
+  // world.agi.*, pattern timers) already ran above and keeps running. ──
+  camera.updateMatrixWorld()
+  _camInv.copy(camera.matrixWorld).invert()
+  _projScreen.multiplyMatrices(camera.projectionMatrix, _camInv)
+  _frustum.setFromProjectionMatrix(_projScreen)
+  const onScreen = rig.model.visible && _frustum.intersectsSphere(rig.bounds)
+  S.bossOnScreen = onScreen
+
+  if (onScreen) {
+    // finger instances: full matrixWorld walk — only when moved AND visible.
+    // fingersDirty persists across offscreen frames, so the first visible
+    // frame re-syncs everything the gate skipped.
+    if (S.fingersDirty) {
+      S.fingersDirty = false
+      syncFingerInstances(rig)
+    }
+    // idle machinery: fan, LEDs
+    rig.fan.rotation.x += step * (world.agi.mode === 'fighting' ? 15 : 6)
+    // LED colors are a pure function of world.time — skip identical rewrites
+    // while the clock is frozen
+    if (S.ledSyncT !== t) {
+      S.ledSyncT = t
+      for (const led of rig.leds) {
+        const on = Math.sin(t * 3.1 + led.phase) > 0.05 ? 1 : 0.22
+        led.mesh.setColorAt(led.index, _c.copy(led.base).multiplyScalar(on))
+      }
+      // every LED is always live → range the full instanceColor span
+      for (const im of rig.ledMeshes) pushUpdateRange(im.instanceColor!, 0, im.count * 3)
+    }
   }
-  for (const im of rig.ledMeshes) im.instanceColor!.needsUpdate = true
   rig.reactorMat.uniforms.uTime.value = t
   rig.reactorMat.uniforms.uHeat.value =
     world.agi.mode === 'tired' ? 0.45
     : world.agi.mode === 'dying' ? 0.5 + Math.random() * 0.7
     : world.agi.mode === 'dead' ? 0 : 1
   // eldritch tentacle mass: mood-coupled undulation + player-tracking eyes
+  // (self-gates its uniform/matrix writes while the world clock is frozen)
   rig.tentacles.update(t, world.agi.mode, S.dying ? S.dying.t : -1, world.player.pos, world.agi.headPos)
-  // spark clusters on grounded hands (one instanced draw each; hidden bits use scale 0)
+  // spark clusters on grounded hands (one instanced draw each; hidden bits use
+  // scale 0). Carriers stay in sync every frame (cheap, avoids pop-in); the
+  // random scatter writes are visual-only and skip while offscreen.
   for (let i = 0; i < 2; i++) {
     const sp = rig.sparks[i]
     sp.group.visible = S.sparkOn[i]
     if (S.sparkOn[i]) {
       sp.group.position.copy(S.sparkPos[i])
-      let dirty = false
-      for (let b = 0; b < 7; b++) {
-        if (Math.random() < 0.4) {
-          const px = (Math.random() - 0.5) * 3.4
-          const py = Math.random() * 1.8
-          const pz = (Math.random() - 0.5) * 3.4
-          const sc = 0.35 + Math.random() * 1.4
-          const vs = Math.random() < 0.88 ? sc : 0
-          _m4.makeScale(vs, vs, vs)
-          _m4.setPosition(px, py, pz)
-          sp.inst.setMatrixAt(b, _m4)
-          dirty = true
+      if (onScreen) {
+        let minB = 7
+        let maxB = -1
+        for (let b = 0; b < 7; b++) {
+          if (Math.random() < 0.4) {
+            const px = (Math.random() - 0.5) * 3.4
+            const py = Math.random() * 1.8
+            const pz = (Math.random() - 0.5) * 3.4
+            const sc = 0.35 + Math.random() * 1.4
+            const vs = Math.random() < 0.88 ? sc : 0
+            _m4.makeScale(vs, vs, vs)
+            _m4.setPosition(px, py, pz)
+            sp.inst.setMatrixAt(b, _m4)
+            if (b < minB) minB = b
+            maxB = b
+          }
         }
+        // upload only the touched instance window
+        if (maxB >= 0) pushUpdateRange(sp.inst.instanceMatrix, minB * 16, (maxB - minB + 1) * 16)
       }
-      if (dirty) sp.inst.instanceMatrix.needsUpdate = true
     }
   }
   // death-beam visual
@@ -1158,6 +1292,10 @@ function resetLocal(S: Local, rig: AgiRig): void {
   S.headPitch = 0
   S.sparkOn[0] = S.sparkOn[1] = false
   S.cargoCount[0] = S.cargoCount[1] = 0
+  S.frozenSynced = false
+  S.fingersDirty = true
+  S.ledSyncT = -1
+  S.bossOnScreen = true
   for (let i = 0; i < 2; i++) {
     const a = S.arms[i]
     a.goal.set(a.side * 19, 10.5, -49)
@@ -1226,7 +1364,7 @@ export function Agi() {
     return off
   }, [])
 
-  useFrame((_, dt) => {
+  useFrame((state, dt) => {
     const { S, rig, face } = getBoss()
     const step = Math.min(dt, 0.05)
     const g = useGame.getState()
@@ -1234,6 +1372,9 @@ export function Agi() {
     // world clock rewound (Director run restart) → all absolute timestamps are
     // stale; hard-reset module state regardless of whether runId re-rendered yet
     if (t + 1e-3 < S.lastT) resetLocal(S, rig)
+    // clock frozen (pause/buffSelect) → arm goals stop moving; feeds the
+    // frozen guard inside updateVisuals
+    const timeFrozen = t === S.lastT
     S.lastT = t
 
     // ── gameplay simulation (gated) ──
@@ -1249,7 +1390,12 @@ export function Agi() {
       }
     }
 
+    // ── always-on visual pass (also refreshes bounds + the offscreen gate) ──
+    updateVisuals(S, rig, t, step, timeFrozen, state.camera)
+
     // ── expression state (world.agi.mode → face, hurt flash overrides) ──
+    // State transitions + events always run (audio listens); only the canvas
+    // redraw is gated on the boss being on screen.
     const mode = world.agi.mode
     let faceNow: BossFace = 'happy'
     if (mode === 'dying' || mode === 'dead') faceNow = 'surprised'
@@ -1261,7 +1407,7 @@ export function Agi() {
       S.lastFaceDraw = -1
       events.emit('bossFace', { face: faceNow })
     }
-    if (t - S.lastFaceDraw >= 0.125) {
+    if (S.bossOnScreen && t - S.lastFaceDraw >= 0.125) {
       S.lastFaceDraw = t
       face.draw(faceNow, t)
     }
@@ -1271,9 +1417,6 @@ export function Agi() {
       : mode === 'dead' ? 0
       : 0.55 + 0.45 * (0.5 + 0.5 * Math.sin(t * 1.8))
     face.update(t, glow)
-
-    // ── always-on visual pass ──
-    updateVisuals(S, rig, t, step)
 
     // ── contract sync: monitor center for aiming/eye checks ──
     world.agi.headPos.set(HEAD_CENTER.x, HEAD_CENTER.y + rig.bob.position.y, HEAD_CENTER.z + rig.bob.position.z)

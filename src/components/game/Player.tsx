@@ -7,6 +7,7 @@ import {
   PLAYER_EYE, PLAYER_RADIUS, PLAYER_SPEED,
 } from '@/game/constants'
 import { events } from '@/game/events'
+import { isCoarsePointer } from '@/game/quality'
 import { useSettings } from '@/game/settings'
 import { simRunning, useGame } from '@/game/store'
 import { world } from '@/game/world'
@@ -43,6 +44,17 @@ const MENU_HEIGHT = 9
 const MENU_SWAY_RATE = 0.05 // rad/s of the ping-pong orbit phase
 const MENU_SWAY_ARC = 0.9 // rad half-arc; keeps camera on the south side
 
+// ─── No-pointer-lock fallback (mobile/test enablement, not touch controls) ───
+// When the platform can't hold a pointer lock (coarse-pointer/touch devices,
+// or requestPointerLock rejected twice), mouse look falls back to pointermove
+// client-position deltas while the sim runs, and the lock-loss→pause listener
+// is disabled (there is never a lock to lose — it would pause instantly).
+let noLock = false
+let lockRejections = 0
+function registerLockRejection(): void {
+  if (++lockRejections >= 2) noLock = true
+}
+
 // module-scope scratch (never allocated per-frame)
 const _fwd = new THREE.Vector3()
 const _right = new THREE.Vector3()
@@ -76,9 +88,12 @@ export function Player() {
   const dipV = useRef(0)
   const roll = useRef(0)
   const menuT = useRef(0)
+  // fallback-look pointer tracking (only used while noLock)
+  const fbPointer = useRef({ active: false, id: -1, x: 0, y: 0 })
 
   useEffect(() => {
     const canvas = gl.domElement
+    if (isCoarsePointer()) noLock = true
 
     const resetLocal = () => {
       keys.current.clear()
@@ -93,17 +108,19 @@ export function Player() {
       dipV.current = 0
       roll.current = 0
       world.player.moveInput.set(0, 0)
+      fbPointer.current.active = false
     }
 
     const tryLock = () => {
-      if (document.pointerLockElement === canvas) return
+      if (noLock || document.pointerLockElement === canvas) return
       try {
         // may return a promise (rejects if the browser refuses, e.g. re-lock
-        // too soon after an exit) — swallow it, the next click re-attempts
+        // too soon after an exit) — swallow it, the next click re-attempts.
+        // Two rejections flip the module into no-lock fallback mode.
         const r = canvas.requestPointerLock() as unknown
-        if (r instanceof Promise) r.catch(() => {})
+        if (r instanceof Promise) r.catch(() => registerLockRejection())
       } catch {
-        /* transient refusal — user clicks again */
+        registerLockRejection() // still counts — user clicks re-attempt until then
       }
     }
 
@@ -121,6 +138,37 @@ export function Player() {
       p.pitch = THREE.MathUtils.clamp(p.pitch - e.movementY * sens, -PITCH_LIMIT, PITCH_LIMIT)
     }
 
+    // no-lock fallback look: client-position deltas of a single tracked pointer
+    // (touch drag on coarse devices; hover-look where a lock was refused)
+    const onFallbackMove = (e: PointerEvent) => {
+      if (!noLock || document.pointerLockElement === canvas) return
+      const f = fbPointer.current
+      if (!simRunning(useGame.getState().phase)) {
+        f.active = false
+        return
+      }
+      if (!f.active) {
+        f.active = true
+        f.id = e.pointerId
+        f.x = e.clientX
+        f.y = e.clientY
+        return
+      }
+      if (e.pointerId !== f.id) return // second touch must not slew the camera
+      const dx = e.clientX - f.x
+      const dy = e.clientY - f.y
+      f.x = e.clientX
+      f.y = e.clientY
+      const p = world.player
+      const sens = LOOK_SENS * useSettings.getState().lookSensitivity
+      p.yaw -= dx * sens
+      p.pitch = THREE.MathUtils.clamp(p.pitch - dy * sens, -PITCH_LIMIT, PITCH_LIMIT)
+    }
+    const onFallbackEnd = (e: PointerEvent) => {
+      // a lifted finger must not teleport the next touch's baseline
+      if (fbPointer.current.active && e.pointerId === fbPointer.current.id) fbPointer.current.active = false
+    }
+
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.code === 'Space') e.preventDefault() // no page scroll
       keys.current.add(e.code) // before the repeat gate: repeats re-add after a reset
@@ -128,6 +176,11 @@ export function Player() {
       // action buffers only while the sim runs — keys pressed on menus/pause
       // must not fire an uncommanded jump/dodge on the first resumed frame
       if (!simRunning(useGame.getState().phase)) return
+      // without a pointer lock, Esc never triggers a lock-loss pause — pause here
+      if (noLock && e.code === 'Escape') {
+        useGame.getState().pause()
+        return
+      }
       const b = useSettings.getState().bindings
       if (e.code === b.jump) jumpBufferedAt.current = world.time
       if (e.code === b.dodge) dodgeQueued.current = true
@@ -139,7 +192,10 @@ export function Player() {
 
     // pointer-lock loss during live sim (Esc, alt-tab) = pause. Phase-driven
     // exits below only happen once the phase is already non-sim, so no loop.
+    // Disabled in noLock fallback mode — there is never a lock to lose, and
+    // pausing on its absence would freeze the game on the first sim frame.
     const onLockChange = () => {
+      if (noLock) return
       if (!document.pointerLockElement && simRunning(useGame.getState().phase)) {
         useGame.getState().pause()
       }
@@ -148,6 +204,9 @@ export function Player() {
 
     canvas.addEventListener('pointerdown', onPointerDown)
     document.addEventListener('mousemove', onMouseMove)
+    document.addEventListener('pointermove', onFallbackMove)
+    document.addEventListener('pointerup', onFallbackEnd)
+    document.addEventListener('pointercancel', onFallbackEnd)
     window.addEventListener('keydown', onKeyDown)
     window.addEventListener('keyup', onKeyUp)
     window.addEventListener('blur', onBlur)
@@ -170,6 +229,9 @@ export function Player() {
       canvas.removeEventListener('pointerdown', onPointerDown)
       document.removeEventListener('pointerlockchange', onLockChange)
       document.removeEventListener('mousemove', onMouseMove)
+      document.removeEventListener('pointermove', onFallbackMove)
+      document.removeEventListener('pointerup', onFallbackEnd)
+      document.removeEventListener('pointercancel', onFallbackEnd)
       window.removeEventListener('keydown', onKeyDown)
       window.removeEventListener('keyup', onKeyUp)
       window.removeEventListener('blur', onBlur)

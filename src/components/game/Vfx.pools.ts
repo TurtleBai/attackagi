@@ -354,22 +354,25 @@ export class PuffPool {
 
 const SHARED_QUAD = new THREE.PlaneGeometry(1, 1)
 const SHARED_SPHERE = new THREE.SphereGeometry(1, 24, 18)
+// unit annulus for shockwave rings: only the band rasterizes (~10x less fill
+// than the old full max-radius quad, which was mostly discarded pixels)
+const SHARED_ANNULUS = new THREE.RingGeometry(0.7, 1, 64)
 
 /** Expanding ground shockwave / dust rings. Blending switched per activation. */
 export class RingPool {
-  private slots: Array<{ mesh: THREE.Mesh; m: THREE.ShaderMaterial; ttl: number; dur: number }>
+  private slots: Array<{ mesh: THREE.Mesh; m: THREE.ShaderMaterial; ttl: number; dur: number; maxR: number; w: number }>
 
   constructor(parent: THREE.Object3D, count = 8) {
     this.slots = []
     for (let i = 0; i < count; i++) {
       const m = ringMaterial()
-      const mesh = new THREE.Mesh(SHARED_QUAD, m)
+      const mesh = new THREE.Mesh(SHARED_ANNULUS, m)
       mesh.rotation.x = -Math.PI / 2
       mesh.visible = false
       mesh.frustumCulled = false
       mesh.renderOrder = 12
       parent.add(mesh)
-      this.slots.push({ mesh, m, ttl: 0, dur: 1 })
+      this.slots.push({ mesh, m, ttl: 0, dur: 1, maxR: 1, w: 0.22 })
     }
   }
 
@@ -378,8 +381,9 @@ export class RingPool {
     let best = this.slots[0]
     for (const s of this.slots) { if (s.ttl <= 0) { best = s; break } if (s.ttl < best.ttl) best = s }
     best.ttl = dur; best.dur = dur
+    best.maxR = maxRadius; best.w = width
     best.mesh.position.set(x, y, z)
-    best.mesh.scale.setScalar(maxRadius * 2)
+    best.mesh.scale.setScalar(Math.max(0.01, maxRadius * width)) // first-frame extent; tracked in update()
     best.mesh.visible = true
     best.m.blending = additive ? THREE.AdditiveBlending : THREE.NormalBlending
     const c = best.m.uniforms.uColor.value as THREE.Color
@@ -394,7 +398,12 @@ export class RingPool {
       if (s.ttl <= 0) { s.mesh.visible = false; continue }
       const t = 1 - s.ttl / s.dur
       const p = 1 - (1 - t) * (1 - t) * (1 - t)
+      // annulus outer edge rides the band's outer extent (clamped at maxRadius,
+      // where the old quad shader discarded anyway)
+      const scale = Math.min(1, p + s.w)
+      s.mesh.scale.setScalar(Math.max(0.01, s.maxR * scale))
       s.m.uniforms.uP.value = p
+      s.m.uniforms.uScale.value = scale
       s.m.uniforms.uFade.value = (1 - t) * (1 - t) * 1.2
     }
   }
