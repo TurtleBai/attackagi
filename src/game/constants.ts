@@ -87,9 +87,10 @@ export const SNIPER_AIM_TIME = 1.4 // red line telegraph duration
 
 export const DRONE_HP = 22
 export const DRONE_BOMB_DAMAGE = 22
-export const DRONE_SPEED = 7 // flying (m/s)
+export const DRONE_SPEED = 17 // attack-run dash toward the player (m/s) — fast; you dodge the drop
+export const DRONE_LOITER_SPEED = 6 // cruise speed peeling away between runs
 export const DRONE_ALTITUDE = 8 // hover height; drop-in falls arrest here (rotors catch)
-export const DRONE_CYCLE = 4.5 // seconds between bomb drops (desynced per drone)
+export const DRONE_REST = 10 // seconds after a bomb before the next attack run
 export const DRONE_BOMB_RADIUS = 2.8 // red circle telegraph radius
 export const DRONE_BOMB_TELEGRAPH = 1.5 // telegraph duration = bomb fall time
 
@@ -109,8 +110,8 @@ export const DROP_INTERVAL = 4.0 // seconds between drop requests while under ca
 
 // ─── Boss ────────────────────────────────────────────────────────────────────
 export const BOSS_HP = 1100
-export const SMASH_WARN_TIME = 2.6 // ground glows red + JUMP! before impact
-export const SMASH_DAMAGE = 40
+export const SMASH_WARN_TIME = 4.0 // ground glows red + JUMP! countdown before impact
+export const SMASH_DAMAGE = 40 // (unused by the smash itself — it instakills; kept for tuning experiments)
 export const BOSS_TIRED_TIME = 7.0
 export const BOSS_PATTERNS_PER_CYCLE = 3
 export const PUNCH_HAND_HP_LIMIT = 60 // max damage extractable per lingering hand
@@ -121,7 +122,7 @@ export const ROCKET_RADIUS = 3.4
 export const ROCKET_DAMAGE = 24
 export const ROCKET_TELEGRAPH = 1.5
 export const DEATHBEAM_WIDTH = 5.0
-export const DEATHBEAM_TELEGRAPH = 1.6
+export const DEATHBEAM_TELEGRAPH = 2.6
 export const DEATHBEAM_SWEEP_TIME = 2.8
 export const MINIGUN_SPINUP = 5.0
 export const MINIGUN_FIRE_TIME = 4.0

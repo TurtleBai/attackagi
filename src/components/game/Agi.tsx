@@ -6,7 +6,7 @@ import {
   ARENA_RADIUS, BOSS_BOLT_DAMAGE, BOSS_BOLT_SPEED, BOSS_PATTERNS_PER_CYCLE, BOSS_TIRED_TIME,
   DEATHBEAM_SWEEP_TIME, DEATHBEAM_TELEGRAPH, DEATHBEAM_WIDTH, FRAME_PRIO, GRAVITY,
   MINIGUN_FIRE_TIME, MINIGUN_SPINUP, PUNCH_DAMAGE, PUNCH_HAND_HP_LIMIT, PUNCH_LINGER,
-  ROCKET_COUNT, ROCKET_DAMAGE, ROCKET_RADIUS, ROCKET_TELEGRAPH, SMASH_DAMAGE, SMASH_WARN_TIME,
+  ROCKET_COUNT, ROCKET_DAMAGE, ROCKET_RADIUS, ROCKET_TELEGRAPH, SMASH_WARN_TIME,
   STRIPE_BARRAGES, STRIPE_COUNT, STRIPE_DAMAGE, STRIPE_GAP, STRIPE_TELEGRAPH, STRIPE_WIDTH,
 } from '@/game/constants'
 import { events } from '@/game/events'
@@ -122,6 +122,7 @@ type PatternState =
   | { id: 'rockets'; t: number; ascAcc: number; ascArm: number; fired: number }
   | {
       id: 'deathBeam'; t: number; init: boolean; made: boolean
+      round: number; nextAt: number
       x0: number; x1: number; sweepStart: number; sweepEnd: number; firedBeam: boolean
     }
   | { id: 'laserBullets'; t: number; started: boolean; marker: Telegraph | null; accA: number; accB: number }
@@ -304,7 +305,7 @@ function startPattern(S: Local, id: BossPatternId): void {
       S.pattern = { id, t: 0, ascAcc: 0, ascArm: 0, fired: 0 }
       break
     case 'deathBeam':
-      S.pattern = { id, t: 0, init: false, made: false, x0: 0, x1: 0, sweepStart: 0, sweepEnd: 0, firedBeam: false }
+      S.pattern = { id, t: 0, init: false, made: false, round: 0, nextAt: 0.6, x0: 0, x1: 0, sweepStart: 0, sweepEnd: 0, firedBeam: false }
       break
     case 'laserBullets':
       S.pattern = { id, t: 0, started: false, marker: null, accA: 0, accB: 0.045 }
@@ -414,12 +415,17 @@ function updateSmash(S: Local, g: ReturnType<typeof useGame.getState>, t: number
       pos: _v1.set(0, 0, 0),
       radius: ARENA_RADIUS,
       duration: SMASH_WARN_TIME,
-      payload: { damage: SMASH_DAMAGE, dodgeableByJump: true, tag: 'smash' },
+      payload: { damage: 0, instakill: true, dodgeableByJump: true, tag: 'smash' },
     })
-    g.set({ warning: 'JUMP!' })
+    g.set({ warning: `JUMP! ${Math.ceil(SMASH_WARN_TIME)}` })
   }
   void step
   const remain = S.smash.tHit - t
+  if (remain > 0 && !S.smash.impacted) {
+    // live countdown so the player knows exactly when to be airborne
+    const label = `JUMP! ${Math.max(1, Math.ceil(remain))}`
+    if (g.warning !== label) g.set({ warning: label })
+  }
   for (let i = 0; i < 2; i++) {
     const arm = S.arms[i]
     arm.aim = null
@@ -526,12 +532,15 @@ function updateDeathBeam(p: Extract<PatternState, { id: 'deathBeam' }>, S: Local
   armO.aim = null
   armO.pointDir = null
 
-  if (!p.made && p.t >= 0.6) {
+  if (!p.made && p.t >= p.nextAt) {
     p.made = true
+    // each sweep covers a THIRD of the arena, anchored just behind the player
+    // so the beam marches over where they stand — two sweeps per pattern
+    const SPAN = (ARENA_RADIUS * 2) / 3
     const px = world.player.pos.x
-    const side = Math.random() < 0.5 ? 1 : -1
-    p.x0 = THREE.MathUtils.clamp(px - side * 8, -(ARENA_RADIUS - 3), ARENA_RADIUS - 3)
-    p.x1 = side * (ARENA_RADIUS - 1)
+    const side = px > 0 ? -1 : 1 // sweep toward the side with more arena
+    p.x0 = THREE.MathUtils.clamp(px - side * 5, -(ARENA_RADIUS - 3), ARENA_RADIUS - 3)
+    p.x1 = THREE.MathUtils.clamp(p.x0 + side * SPAN, -(ARENA_RADIUS - 1), ARENA_RADIUS - 1)
     // enough overlapping stripes that the sweep is contiguous — a fixed count
     // left multi-meter always-safe gaps the beam visual swept straight through
     const NR = Math.max(2, Math.ceil(Math.abs(p.x1 - p.x0) / (DEATHBEAM_WIDTH * 0.85)) + 1)
@@ -576,11 +585,19 @@ function updateDeathBeam(p: Extract<PatternState, { id: 'deathBeam' }>, S: Local
   }
   if (p.t >= p.sweepEnd + 0.4) {
     S.beam.active = false
-    armC.morphGoal = 0
-    armC.charge = 0
-    armC.aim = null
+    if (p.round === 0) {
+      // recharge, then the second third-arena sweep, re-anchored on the player
+      p.round = 1
+      p.made = false
+      p.firedBeam = false
+      p.nextAt = p.t + 1.2
+    } else {
+      armC.morphGoal = 0
+      armC.charge = 0
+      armC.aim = null
+    }
   }
-  return p.t >= p.sweepEnd + 0.9
+  return p.round >= 1 && p.t >= p.sweepEnd + 0.9
 }
 
 function updateMiniguns(

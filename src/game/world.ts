@@ -394,7 +394,7 @@ const HEADSHOT_ZONE: Record<EnemyKind, { y: number; r: number; x?: number }> = {
   ranger: { y: 1.84, r: 0.17 },
   tank: { y: 2.04, r: 0.19 },
   sniper: { y: 1.88, r: 0.14, x: -0.075 },
-  drone: { y: 0.35, r: 0.16 }, // glowing core at the center of the squat pod
+  drone: { y: 0.78, r: 0.15 }, // the little sensor head atop the pod
 }
 
 function rayAabb(origin: THREE.Vector3, dir: THREE.Vector3, center: THREE.Vector3, half: THREE.Vector3): number | null {

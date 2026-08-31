@@ -6,7 +6,7 @@ All tuning numbers live in `src/game/constants.ts` (referenced here by constant 
 
 ## Game flow (phase machine, owned by Director)
 
-`menu` → click Start → `wave` (1) → wave cleared → `buffSelect` (3 random buffs, pick 1) → `wave` (2) … through wave 5 → `smash` (AGI smashes the floor: whole ground glows red, big "JUMP!" warning at top of screen; player must be airborne at impact or take `SMASH_DAMAGE`; smash **clears all obstacles**) → `boss` (boss health bar appears at top) → boss HP 0 → `victory` (AGI makes a surprised `:0` face, then blows up). Player HP 0 at any point → `dead` (retry restarts the whole run — roguelike).
+`menu` → click Start → `wave` (1) → wave cleared → `buffSelect` (3 random buffs, pick 1) → `wave` (2) … through wave 5 → `smash` (AGI smashes the floor: whole ground glows red with a big "JUMP!" countdown at top of screen ticking down over `SMASH_WARN_TIME` (4s); the player must be airborne at impact or is **instantly killed**; smash **clears all obstacles**) → `boss` (boss health bar appears at top) → boss HP 0 → `victory` (AGI makes a surprised `:0` face, then blows up). Player HP 0 at any point → `dead` (retry restarts the whole run — roguelike).
 
 ## Player
 
@@ -28,7 +28,7 @@ First-person camera at eye height `PLAYER_EYE`. Fast base walk speed `PLAYER_SPE
 | **ranger** | stands still, shoots slow dodgeable laser bolts (`RANGER_BOLT_SPEED`) every `RANGER_INTERVAL` | `RANGER_HP` (lower than melee) | `RANGER_DAMAGE` |
 | **tank** | melee-bot with a **shield**, no sword. Walks at player; near range stops, telegraphs for `TANK_WINDUP` = 1.5s with a **red rectangle floor indicator** along its dash path, then shield-bashes (dash `TANK_BASH_SPEED`, `TANK_DAMAGE`). Shield **blocks player bullets** from the front (~`TANK_SHIELD_ARC`). HP = melee's. | `TANK_HP` | `TANK_DAMAGE` |
 | **sniper** | robot with a sniper rifle + lens over one eye. Every `SNIPER_INTERVAL` = 5s: telegraphs a **red floor line indicator** where its beam will go (`SNIPER_AIM_TIME`), then fires an instant laser beam. HP = ranger's. | `SNIPER_HP` | `SNIPER_DAMAGE` |
-| **drone** | purple-glowing quad-rotor bomber gunship, **flying** (`DRONE_SPEED`): its AGI-hand drop arrests mid-air at `DRONE_ALTITUDE` (~8m) instead of the ground. Picks a bombing point biased near the player (random 4–9m offset), flies there, hovers directly above it, telegraphs a **red circle floor indicator** (`DRONE_BOMB_RADIUS`, `DRONE_BOMB_TELEGRAPH`) and drops a bomb timed to land at the telegraph's resolve, then drifts to a new point — one bomb every `DRONE_CYCLE` (~4.5s, desynced per drone); repositions first if the player has run off. Out of bat reach; on death its rotors stop and it tumble-falls to the floor. HP = ranger's. | `DRONE_HP` | `DRONE_BOMB_DAMAGE` |
+| **drone** | purple-glowing quad-rotor bomber gunship, **flying**: its AGI-hand drop arrests mid-air at `DRONE_ALTITUDE` (~8m) instead of the ground. It **dive-bombs**: rests/loiters 12–18m out cruising at `DRONE_LOITER_SPEED`, then makes a fast attack run straight at the player at `DRONE_SPEED` (17 m/s); when it passes overhead it telegraphs a **red circle floor indicator** at the player's position (`DRONE_BOMB_RADIUS`, `DRONE_BOMB_TELEGRAPH`) and drops a bomb timed to land at the telegraph's resolve — the player has to dodge the drop — then peels away and waits `DRONE_REST` (~10s, desynced per drone) before the next run. Out of bat reach; headshots require hitting the little sensor head on top of the hull; on death its rotors stop and it tumble-falls to the floor. HP = ranger's. | `DRONE_HP` | `DRONE_BOMB_DAMAGE` |
 
 **Terrain favors the player**: obstacles block shield bashes, sniper/boss laser beams, and ranger bolts (line-of-sight checks via `world.segmentBlocked`).
 
@@ -57,7 +57,7 @@ During waves it hovers beyond the arena rim dropping enemies. After wave 5 it sm
 **Attack patterns** (telegraph everything on the floor in red; all beams/projectiles blocked by nothing during boss phase — obstacles are gone):
 
 1. **Rocket Barrage** — many rockets up, carpet-bomb the arena; red circles show landing spots (`ROCKET_*`).
-2. **Death Beam** — giant sweeping laser with a red floor-line indicator; **instantly kills** if it hits (the only instakill).
+2. **Death Beam** — giant sweeping laser with a red floor-line indicator; **instantly kills** if it hits. Fires **twice per pattern**: each sweep covers a **third of the arena** anchored near the player, then the cannon recharges (~1.2s) and re-anchors for a second third-arena sweep. Long wind-up before each firing (`DEATHBEAM_TELEGRAPH` = 2.6s).
 3. **Laser Bullets** — arms morph into miniguns, spin up for `MINIGUN_SPINUP` = 5s with a floor aim marker tracking the player's position, then hose fast-but-dodgeable bolts (`BOSS_BOLT_SPEED`) — dodge by strafing/running.
 4. **Punch** — both hands punch down (red circle telegraphs, `PUNCH_DAMAGE`), then the hands **stay on the arena** for `PUNCH_LINGER` letting the player deal a little damage.
 5. **Laser Beam Barrage** — stripes of parallel lasers across the arena floor (red stripe telegraphs first); 3 barrages, alternating side/angle so safe lanes shift.
@@ -66,4 +66,4 @@ Lasers aimed at the player travel slow enough to dodge. Telegraph shapes use `wo
 
 ## HUD (shadcn/ui, DOM overlay)
 
-Crosshair (+ bat charge ring, flashes at max), HP bar, ammo `8/40`, molotov count, weapon selector 1/2/3, wave banner + enemies-remaining, buff select modal (3 cards), boss health bar, giant "JUMP!" warning during smash, dodge cooldown pip, damage vignette, death screen (retry), victory screen.
+Crosshair (+ bat charge ring, flashes at max), HP bar, ammo `8/40`, molotov count, weapon selector 1/2/3, wave banner + enemies-remaining, buff select modal (3 cards), boss health bar, giant "JUMP! n" countdown during smash, dodge cooldown pip, damage vignette, death screen (retry), victory screen.

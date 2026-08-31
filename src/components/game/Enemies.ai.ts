@@ -3,7 +3,7 @@ import * as THREE from 'three'
 import {
   ARENA_RADIUS,
   DRONE_ALTITUDE, DRONE_BOMB_DAMAGE, DRONE_BOMB_RADIUS, DRONE_BOMB_TELEGRAPH,
-  DRONE_CYCLE, DRONE_SPEED, GRAVITY,
+  DRONE_LOITER_SPEED, DRONE_REST, DRONE_SPEED, GRAVITY,
   MELEE_DAMAGE, MELEE_RANGE, MELEE_SPEED, MELEE_SWING_TIME,
   PLAYER_RADIUS,
   RANGER_BOLT_SPEED, RANGER_DAMAGE, RANGER_INTERVAL,
@@ -289,17 +289,13 @@ export function aiTank(e: Enemy, step: number): void {
 // ─── Drone: travel → hover above target → circle telegraph + bomb drop ───────
 
 /** Seconds the drone lingers over the target after release (watching the boom). */
-export const DRONE_LINGER = 0.4
-/** Re-pick the bombing point when the player has run this far from it. */
-const DRONE_STALE_DIST = 14
-/** Pose pulse length after a bomb release (rack flash + kick-up), read by poseDrone. */
 export const DRONE_DROP_PULSE = 0.9
 
-/** Bombing point biased near the player: random offset 4–9m, clamped to the arena. */
-function pickBombTarget(e: Enemy): void {
+/** Loiter point: well away from the player, inside the arena. */
+function pickLoiterPoint(e: Enemy): void {
   const p = world.player
   const a = Math.random() * Math.PI * 2
-  const r = 4 + Math.random() * 5
+  const r = 12 + Math.random() * 6
   let x = p.pos.x + Math.sin(a) * r
   let z = p.pos.z + Math.cos(a) * r
   const d = Math.hypot(x, z)
@@ -308,16 +304,16 @@ function pickBombTarget(e: Enemy): void {
     x = (x / d) * max
     z = (z / d) * max
   }
-  e.data.bombX = x
-  e.data.bombZ = z
-  e.data.hasTarget = 1
+  e.data.loiterX = x
+  e.data.loiterZ = z
 }
 
+// Dive-bomber loop: SPRINT straight at the player (attack run), release the
+// bomb directly overhead (the telegraph lands ON them — dodge or die), linger
+// a beat, peel away to a loiter point, and rest ~DRONE_REST before the next run.
 export function aiDrone(e: Enemy, step: number): void {
   const p = world.player
   e.stateT += step
-  e.data.bombT = (e.data.bombT ?? DRONE_CYCLE) - step
-  if (e.data.hasTarget !== 1) pickBombTarget(e)
 
   // vertical: hold altitude with a gentle bob — the GAMEPLAY y really bobs, so
   // raycasts/collision see the same motion the eye does. Also lifts ground-level
@@ -325,23 +321,17 @@ export function aiDrone(e: Enemy, step: number): void {
   const wantY = DRONE_ALTITUDE + Math.sin(world.time * 1.7 + (e.data.phase ?? 0)) * 0.28
   e.pos.y += (wantY - e.pos.y) * Math.min(1, 3 * step)
 
-  const tx = e.data.bombX ?? 0
-  const tz = e.data.bombZ ?? 0
-  const dx = tx - e.pos.x
-  const dz = tz - e.pos.z
-  const dist = Math.hypot(dx, dz)
-
   // smoothed world-velocity (for pose tilt-into-motion); decays while hovering
   let mvx = 0
   let mvz = 0
 
   switch (e.state) {
     case 'travel': {
-      // the player ran off — the picked point no longer threatens; chase closer
-      const pdx = tx - p.pos.x
-      const pdz = tz - p.pos.z
-      if (pdx * pdx + pdz * pdz > DRONE_STALE_DIST * DRONE_STALE_DIST) pickBombTarget(e)
-      const spd = DRONE_SPEED * Math.min(1, 0.3 + dist / 3) // ease in on arrival
+      // ATTACK RUN: dash at full DRONE_SPEED toward directly above the player
+      const dx = p.pos.x - e.pos.x
+      const dz = p.pos.z - e.pos.z
+      const dist = Math.hypot(dx, dz)
+      const spd = DRONE_SPEED * Math.min(1, 0.35 + dist / 4)
       if (dist > 1e-4) {
         mvx = (dx / dist) * spd
         mvz = (dz / dist) * spd
@@ -349,43 +339,21 @@ export function aiDrone(e: Enemy, step: number): void {
         e.pos.z += mvz * step
       }
       e.data.speed = spd
-      e.data.tYaw = dist > 1.2
-        ? Math.atan2(dx, dz)
-        : Math.atan2(p.pos.x - e.pos.x, p.pos.z - e.pos.z)
-      if (dist < 0.7) {
-        e.state = 'hover'
-        e.stateT = 0
-        e.data.speed = 0
-      }
-      break
-    }
-    case 'hover': {
-      // pinned directly above the target; face the player while waiting
-      const ck = Math.min(1, 4 * step)
-      e.pos.x += dx * ck
-      e.pos.z += dz * ck
-      mvx = (dx * ck) / Math.max(step, 1e-4)
-      mvz = (dz * ck) / Math.max(step, 1e-4)
-      e.data.speed = 0
-      e.data.tYaw = Math.atan2(p.pos.x - e.pos.x, p.pos.z - e.pos.z)
-      const pdx = tx - p.pos.x
-      const pdz = tz - p.pos.z
-      if (pdx * pdx + pdz * pdz > DRONE_STALE_DIST * DRONE_STALE_DIST) {
-        // target went stale while waiting for the cycle — reposition first
-        pickBombTarget(e)
-        e.state = 'travel'
-        e.stateT = 0
-        break
-      }
-      if (e.data.bombT <= 0) {
-        // glowing red circle on the floor; damage resolves centrally at tHit
-        _t.set(tx, 0, tz)
+      e.data.tYaw = Math.atan2(dx, dz)
+      if (dist < 1.3) {
+        // overhead — release right on the player's head
+        _t.set(p.pos.x, 0, p.pos.z)
+        const dArena = Math.hypot(_t.x, _t.z)
+        const maxR = ARENA_RADIUS - 2
+        if (dArena > maxR) {
+          _t.x *= maxR / dArena
+          _t.z *= maxR / dArena
+        }
         world.addTelegraph({
           shape: 'circle', pos: _t, radius: DRONE_BOMB_RADIUS, duration: DRONE_BOMB_TELEGRAPH,
           payload: { damage: DRONE_BOMB_DAMAGE, explosion: true, tag: 'rocket' },
         })
         // visual bomb from the rack, gravity-timed to land exactly at tHit
-        // (same trick as the boss rocket barrage: kind 'rocket', damage 0)
         _m.set(e.pos.x, e.pos.y - 0.35, e.pos.z)
         const h = Math.max(1, _m.y)
         const v0 = 0.6 // small initial push so the streak orients nose-down at once
@@ -395,26 +363,68 @@ export function aiDrone(e: Enemy, step: number): void {
           radius: 0.3, damage: 0, ttl: DRONE_BOMB_TELEGRAPH + 0.3, gravityScale: Math.max(0, gs),
         })
         e.data.dropT = DRONE_DROP_PULSE
-        e.data.bombT = DRONE_CYCLE * (0.9 + Math.random() * 0.2)
+        e.data.restT = DRONE_REST * (0.9 + Math.random() * 0.2)
+        pickLoiterPoint(e)
         e.state = 'dropwait'
         e.stateT = 0
       }
       break
     }
     case 'dropwait': {
-      // linger over the strike, then drift off to the next point
+      // brief overhead linger so the drop reads, then peel away
       e.data.speed = 0
       e.data.tYaw = Math.atan2(p.pos.x - e.pos.x, p.pos.z - e.pos.z)
-      if (e.stateT >= DRONE_BOMB_TELEGRAPH + DRONE_LINGER) {
-        pickBombTarget(e)
-        e.state = 'travel'
+      if (e.stateT >= 0.7) {
+        e.state = 'retreat'
         e.stateT = 0
       }
+      break
+    }
+    case 'retreat': {
+      // cruise out to the loiter point, eyes on the player
+      const dx = (e.data.loiterX ?? 0) - e.pos.x
+      const dz = (e.data.loiterZ ?? 0) - e.pos.z
+      const dist = Math.hypot(dx, dz)
+      const spd = DRONE_LOITER_SPEED * Math.min(1, 0.3 + dist / 3)
+      if (dist > 1e-4) {
+        mvx = (dx / dist) * spd
+        mvz = (dz / dist) * spd
+        e.pos.x += mvx * step
+        e.pos.z += mvz * step
+      }
+      e.data.speed = spd
+      e.data.tYaw = Math.atan2(p.pos.x - e.pos.x, p.pos.z - e.pos.z)
+      if (dist < 0.8) {
+        e.state = 'rest'
+        e.stateT = 0
+        e.data.speed = 0
+      }
+      break
+    }
+    case 'rest': {
+      // station-keep at the loiter point until the rest timer expires
+      e.data.speed = 0
+      e.data.tYaw = Math.atan2(p.pos.x - e.pos.x, p.pos.z - e.pos.z)
+      const dx = (e.data.loiterX ?? 0) - e.pos.x
+      const dz = (e.data.loiterZ ?? 0) - e.pos.z
+      const ck = Math.min(1, 1.5 * step)
+      e.pos.x += dx * ck
+      e.pos.z += dz * ck
       break
     }
     default:
       e.state = 'travel'
       e.stateT = 0
+  }
+
+  // the rest timer runs through dropwait/retreat/rest, so the gap between a
+  // drop and the next attack run is ~DRONE_REST regardless of travel time
+  if (e.state === 'dropwait' || e.state === 'retreat' || e.state === 'rest') {
+    e.data.restT = (e.data.restT ?? DRONE_REST) - step
+    if (e.data.restT <= 0 && e.state !== 'dropwait') {
+      e.state = 'travel'
+      e.stateT = 0
+    }
   }
 
   // damp the pose-tilt velocity toward this frame's actual motion

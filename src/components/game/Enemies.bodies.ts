@@ -594,6 +594,18 @@ function buildTemplate(kind: EnemyKind): THREE.Group {
     strip.position.set(0, 0.115, 0.415)
     head.add(strip)
 
+    // the little HEAD on top — the headshot target (HEADSHOT_ZONE.drone at
+    // e.pos.y + 0.78 ≈ pod node 0.42 + local 0.36): neck stalk + beveled head
+    // cube with a bright visor slit so it reads as "shoot me" from the ground
+    head.add(meshOf(mergeParts('droneHead:c', [
+      { g: cyl(0.035, 0.048, 0.09, 8), p: [0, 0.27, 0.08] }, // neck stalk
+      { g: bevelBox(0.16, 0.14, 0.16, 0.022), p: [0, 0.36, 0.08] }, // the head
+      { g: boxG(0.05, 0.02, 0.04), p: [0, 0.445, 0.08] }, // topknot sensor
+    ]), chassis, 'chassis', true, true))
+    const headVisor = glowMesh(boxG(0.12, 0.032, 0.02), DRONE_GLOW, 2.8, 'trim')
+    headVisor.position.set(0, 0.365, 0.168)
+    head.add(headVisor)
+
     // X-frame arms to four ducted rotors + the bomb-rack rails (structural dark)
     const frame: Part[] = []
     const rings: Part[] = []

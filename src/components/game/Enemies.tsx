@@ -3,7 +3,7 @@ import { useFrame } from '@react-three/fiber'
 import { useEffect, useRef } from 'react'
 import * as THREE from 'three'
 import {
-  DRONE_ALTITUDE, DRONE_CYCLE, DRONE_HP, FRAME_PRIO, GRAVITY,
+  DRONE_ALTITUDE, DRONE_HP, FRAME_PRIO, GRAVITY,
   MELEE_HP, RANGER_HP, RANGER_INTERVAL, SNIPER_HP, STRAGGLER_OUTLINE_COUNT, TANK_HP, TANK_WINDUP,
 } from '@/game/constants'
 import { simRunning, useGame } from '@/game/store'
@@ -35,10 +35,10 @@ const KIND_DEF: Record<EnemyKind, { hp: number; r: number; h: number }> = {
   ranger: { hp: RANGER_HP, r: 0.5, h: 2.0 },
   tank: { hp: TANK_HP, r: 0.7, h: 2.2 },
   sniper: { hp: SNIPER_HP, r: 0.5, h: 2.1 },
-  drone: { hp: DRONE_HP, r: 0.7, h: 0.7 }, // squat flying pod
+  drone: { hp: DRONE_HP, r: 0.7, h: 0.95 }, // squat flying pod + the little top head
 }
 const INIT_STATE: Record<EnemyKind, string> = {
-  melee: 'chase', ranger: 'hold', tank: 'advance', sniper: 'track', drone: 'travel',
+  melee: 'chase', ranger: 'hold', tank: 'advance', sniper: 'track', drone: 'rest',
 }
 
 // ─── Spawning ────────────────────────────────────────────────────────────────
@@ -74,7 +74,12 @@ function drainSpawns(): void {
     e.data.logo = Math.floor(Math.random() * LOGO_COUNT) // random AI-lab chest emblem
     if (s.kind === 'ranger') e.data.fireT = 1.2 + Math.random() * RANGER_INTERVAL
     if (s.kind === 'sniper') e.data.cycleJitter = Math.random() * 0.6 - 0.2
-    if (s.kind === 'drone') e.data.bombT = 1.2 + Math.random() * DRONE_CYCLE * 0.6 // desync bomb cycles
+    if (s.kind === 'drone') {
+      // spawn loitering at the drop point briefly — desyncs the attack runs
+      e.data.restT = 1 + Math.random() * 4
+      e.data.loiterX = s.pos.x
+      e.data.loiterZ = s.pos.z
+    }
     if (s.dropFrom > 0) {
       e.pos.y = s.dropFrom
     } else {
@@ -549,8 +554,9 @@ function poseFullRate(e: Enemy): boolean {
     case 'sniper': return true
     case 'ranger': return (e.data.muzzleT ?? 0) > 0
     case 'drone':
-      // dropwait/drop-pulse are the bomb tell; a rotors-dead wreck tumbles fast
-      return e.state === 'dropwait' || (e.data.dropT ?? 0) > 0 ||
+      // the 17 m/s attack run + drop tell must never pose at half rate; a
+      // rotors-dead wreck tumbles fast too
+      return e.state === 'travel' || e.state === 'dropwait' || (e.data.dropT ?? 0) > 0 ||
         (e.hp <= 0 && e.data.impacted !== 1)
   }
 }
