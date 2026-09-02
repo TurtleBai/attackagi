@@ -1,7 +1,9 @@
 'use client'
-import { useEffect } from 'react'
+import { ChevronDown } from 'lucide-react'
+import { useEffect, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Card, CardAction, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { Kbd, KbdGroup } from '@/components/ui/kbd'
 import { BUFFS, WAVES } from '@/game/constants'
 import { keyLabel, useSettings, type BindableAction } from '@/game/settings'
@@ -42,6 +44,7 @@ const TOUCH_CONTROLS: ReadonlyArray<readonly [string, string]> = [
 export function MenuScreen() {
   const bindings = useSettings((s) => s.bindings)
   const CONTROLS = controlRows(bindings)
+  const [manualOpen, setManualOpen] = useState(true)
   const start = () => {
     uiClick()
     useGame.getState().startGame()
@@ -63,35 +66,52 @@ export function MenuScreen() {
           </span>
         </div>
 
-        <Card className="w-[22rem] max-w-[86vw] bg-background/55 backdrop-blur-md">
+        <Collapsible
+          open={manualOpen}
+          onOpenChange={(o) => {
+            uiClick()
+            setManualOpen(o)
+          }}
+          render={<Card className={cn('w-[22rem] max-w-[86vw] bg-background/55 backdrop-blur-md transition-[gap] duration-300', !manualOpen && 'gap-0')} />}
+        >
           <CardHeader>
             <CardTitle className="font-mono text-[11px] tracking-[0.4em] text-muted-foreground">FIELD MANUAL</CardTitle>
+            <CardAction>
+              <CollapsibleTrigger
+                aria-label={manualOpen ? 'Minimize field manual' : 'Expand field manual'}
+                render={<Button variant="ghost" size="icon-sm" className="-mt-1.5 -mr-2 text-muted-foreground" />}
+              >
+                <ChevronDown className={cn('transition-transform duration-300', !manualOpen && '-rotate-90')} />
+              </CollapsibleTrigger>
+            </CardAction>
           </CardHeader>
-          <CardContent className="flex flex-col">
-            {/* keyboard rows (fine pointers) */}
-            <div className="flex flex-col pointer-coarse:hidden">
-              {CONTROLS.map(([label, keys]) => (
-                <div key={label} className="flex items-center justify-between border-b border-border/40 py-1.5 last:border-0">
-                  <span className="font-mono text-[11px] tracking-[0.18em] text-muted-foreground">{label}</span>
-                  <KbdGroup>
-                    {keys.map((k) => (
-                      <Kbd key={k} className="bg-muted/60 font-mono">{k}</Kbd>
-                    ))}
-                  </KbdGroup>
-                </div>
-              ))}
-            </div>
-            {/* touch rows (coarse pointers) */}
-            <div className="hidden flex-col pointer-coarse:flex">
-              {TOUCH_CONTROLS.map(([label, control]) => (
-                <div key={label} className="flex items-center justify-between border-b border-border/40 py-1.5 last:border-0">
-                  <span className="font-mono text-[11px] tracking-[0.18em] text-muted-foreground">{label}</span>
-                  <Kbd className="bg-muted/60 font-mono">{control}</Kbd>
-                </div>
-              ))}
-            </div>
-          </CardContent>
-        </Card>
+          <CollapsibleContent className="h-[var(--collapsible-panel-height)] overflow-hidden transition-[height] duration-300 data-[ending-style]:h-0 data-[starting-style]:h-0">
+            <CardContent className="flex flex-col">
+              {/* keyboard rows (fine pointers) */}
+              <div className="flex flex-col pointer-coarse:hidden">
+                {CONTROLS.map(([label, keys]) => (
+                  <div key={label} className="flex items-center justify-between border-b border-border/40 py-1.5 last:border-0">
+                    <span className="font-mono text-[11px] tracking-[0.18em] text-muted-foreground">{label}</span>
+                    <KbdGroup>
+                      {keys.map((k) => (
+                        <Kbd key={k} className="bg-muted/60 font-mono">{k}</Kbd>
+                      ))}
+                    </KbdGroup>
+                  </div>
+                ))}
+              </div>
+              {/* touch rows (coarse pointers) */}
+              <div className="hidden flex-col pointer-coarse:flex">
+                {TOUCH_CONTROLS.map(([label, control]) => (
+                  <div key={label} className="flex items-center justify-between border-b border-border/40 py-1.5 last:border-0">
+                    <span className="font-mono text-[11px] tracking-[0.18em] text-muted-foreground">{label}</span>
+                    <Kbd className="bg-muted/60 font-mono">{control}</Kbd>
+                  </div>
+                ))}
+              </div>
+            </CardContent>
+          </CollapsibleContent>
+        </Collapsible>
 
         <Button
           size="lg"
