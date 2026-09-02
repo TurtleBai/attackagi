@@ -207,6 +207,24 @@ export function Director() {
     return unsub
   }, [])
 
+  // Undocumented dev skip (deliberately absent from every menu/legend): K mid-run
+  // wipes the field and jumps straight to the smash → boss sequence.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.code !== 'KeyK' || e.repeat) return
+      const s = useGame.getState()
+      if (s.phase !== 'wave' && s.phase !== 'buffSelect') return
+      world.enemies.clear()
+      world.projectiles.length = 0
+      world.telegraphs.length = 0
+      world.hazards.length = 0
+      world.dropRequests.length = 0
+      s.set({ phase: 'smash', buffChoices: null, warning: null, enemiesRemaining: 0 })
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
   function flowControl(): void {
     const s = useGame.getState()
     // buff picked (Hud nulled buffChoices but left phase 'buffSelect') → advance
