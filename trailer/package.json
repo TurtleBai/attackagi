@@ -1,0 +1,27 @@
+{
+  "name": "attackagi-trailer",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "render": "node scripts/render.mjs",
+    "audio": "node scripts/audio.mjs",
+    "stills": "node scripts/stills.mjs",
+    "contact": "node scripts/contact.mjs"
+  },
+  "dependencies": {
+    "n8ao": "^2.0.1",
+    "postprocessing": "^6.39.4",
+    "three": "^0.185.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "@types/three": "^0.185.4",
+    "playwright": "^1.55.0",
+    "typescript": "^5",
+    "vite": "^7.1.0"
+  }
+}
