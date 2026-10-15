@@ -106,6 +106,29 @@ function HudStyles() {
   100% { filter: none; }
 }
 .hud-ready-flash { animation: hudFlash 0.35s ease-out both; }
+
+/* ── title screen ── */
+
+/* slow vertical drift for the menu scanline field (4px pattern, 96px loop = seamless) */
+@keyframes hudScanDrift {
+  from { background-position: 0 0; }
+  to { background-position: 0 96px; }
+}
+.hud-scan-drift { animation: hudScanDrift 6s linear infinite; }
+
+/* breathing red glow on the ENGAGE button */
+@keyframes hudEngage {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(248,113,113,0.45), 0 10px 28px -10px rgba(153,27,27,0.85); }
+  50% { box-shadow: 0 0 28px 5px rgba(248,113,113,0.32), 0 10px 28px -10px rgba(153,27,27,0.85); }
+}
+.hud-engage { animation: hudEngage 2.4s ease-in-out infinite; }
+
+/* hard blink for terminal cursors */
+@keyframes hudBlink {
+  0%, 49% { opacity: 1; }
+  50%, 100% { opacity: 0; }
+}
+.hud-blink { animation: hudBlink 1s steps(1, end) infinite; }
     `}</style>
   )
 }

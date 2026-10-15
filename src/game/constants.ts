@@ -20,12 +20,12 @@ export const FRAME_PRIO = {
 export const PLAYER_HP = 100
 export const PLAYER_EYE = 1.7
 export const PLAYER_RADIUS = 0.45
-export const PLAYER_SPEED = 9.5 // fast walk (m/s)
+export const PLAYER_SPEED = 8.4 // fast walk (m/s) — quick, but the horde can still pressure
 export const JUMP_VELOCITY = 9.5
-export const DODGE_SPEED = 26
+export const DODGE_SPEED = 22 // ~4.8m dash over DODGE_TIME
 export const DODGE_TIME = 0.22
-export const DODGE_IFRAMES = 0.38
-export const DODGE_COOLDOWN = 2.0
+export const DODGE_IFRAMES = 0.34
+export const DODGE_COOLDOWN = 2.2
 
 // ─── Revolver (slot 1 sidearm) ───────────────────────────────────────────────
 export const PISTOL_DAMAGE = 20
@@ -54,15 +54,15 @@ export const FIRE_DURATION = 6.0
 export const FIRE_DPS = 22
 
 // ─── Ammo crates ─────────────────────────────────────────────────────────────
-export const CRATE_INTERVAL = 14 // seconds between spawns during waves
+export const CRATE_INTERVAL = 12 // seconds between spawns during waves
 export const CRATE_MAX = 3
 export const CRATE_PICKUP_RADIUS = 1.6
 
 // ─── Enemies ─────────────────────────────────────────────────────────────────
-export const MAX_CONCURRENT_ENEMIES = 22
+export const MAX_CONCURRENT_ENEMIES = 16
 export const MELEE_HP = 36
 export const MELEE_DAMAGE = 10
-export const MELEE_SPEED = 5.2
+export const MELEE_SPEED = 5.6 // keeps chase pressure on the rebalanced player speed
 export const MELEE_RANGE = 2.2
 export const MELEE_SWING_TIME = 0.5
 
@@ -87,10 +87,10 @@ export const SNIPER_AIM_TIME = 1.4 // red line telegraph duration
 
 export const DRONE_HP = 22
 export const DRONE_BOMB_DAMAGE = 22
-export const DRONE_SPEED = 17 // attack-run dash toward the player (m/s) — fast; you dodge the drop
+export const DRONE_SPEED = 15 // attack-run dash toward the player (m/s) — fast; you dodge the drop
 export const DRONE_LOITER_SPEED = 6 // cruise speed peeling away between runs
 export const DRONE_ALTITUDE = 8 // hover height; drop-in falls arrest here (rotors catch)
-export const DRONE_REST = 10 // seconds after a bomb before the next attack run
+export const DRONE_REST = 12 // seconds after a bomb before the next attack run
 export const DRONE_BOMB_RADIUS = 2.8 // red circle telegraph radius
 export const DRONE_BOMB_TELEGRAPH = 1.5 // telegraph duration = bomb fall time
 
@@ -98,21 +98,29 @@ export const DRONE_BOMB_TELEGRAPH = 1.5 // telegraph duration = bomb fall time
 export const STRAGGLER_OUTLINE_COUNT = 5
 
 // ─── Waves: [melee, ranger, tank, sniper, drone] ─────────────────────────────
+// Eight short rounds instead of five marathons: every wave is a 1–2 minute
+// fight and difficulty comes from composition, not body count. More rounds
+// also means more buff picks per run (one after every clear).
 export const WAVES: ReadonlyArray<readonly [number, number, number, number, number]> = [
-  [20, 10, 0, 0, 5],
-  [20, 10, 5, 0, 10],
-  [20, 10, 10, 5, 15],
-  [20, 10, 20, 10, 15],
-  [10, 20, 20, 10, 15],
+  [9, 5, 0, 0, 0],
+  [10, 6, 2, 0, 2],
+  [9, 7, 4, 2, 4],
+  [9, 7, 5, 3, 5],
+  [8, 8, 6, 4, 6],
+  [8, 9, 6, 5, 7],
+  [7, 9, 7, 6, 7],
+  [7, 10, 8, 6, 8],
 ]
-export const DROP_BATCH = 5 // enemies per AGI hand drop
-export const DROP_INTERVAL = 4.0 // seconds between drop requests while under cap
+export const DROP_BATCH = 4 // enemies per AGI hand drop
+export const DROP_INTERVAL = 3.2 // seconds between drop requests while under cap
 
 // ─── Boss ────────────────────────────────────────────────────────────────────
 export const BOSS_HP = 1100
+export const BOSSFIGHT_HP = 1900
 export const SMASH_WARN_TIME = 4.0 // ground glows red + JUMP! countdown before impact
 export const SMASH_DAMAGE = 40 // (unused by the smash itself — it instakills; kept for tuning experiments)
 export const BOSS_TIRED_TIME = 7.0
+export const BOSSFIGHT_TIRED_TIME = 5.5
 export const BOSS_PATTERNS_PER_CYCLE = 3
 export const PUNCH_HAND_HP_LIMIT = 60 // max damage extractable per lingering hand
 export const PUNCH_DAMAGE = 30

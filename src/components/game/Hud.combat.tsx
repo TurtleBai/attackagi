@@ -478,11 +478,14 @@ function WaveBanner() {
   const phase = useGame((s) => s.phase)
   const wave = useGame((s) => s.wave)
   const remaining = useGame((s) => s.enemiesRemaining)
+  const mode = useGame((s) => s.mode)
+  const customWaveCount = useGame((s) => s.customConfig.waves)
   if (phase !== 'wave') return null
+  const waveLimit = mode === 'endless' ? '∞' : mode === 'custom' ? customWaveCount : WAVES.length
   return (
     <div key={wave} className="hud-banner-in absolute top-5 left-1/2 flex -translate-x-1/2 flex-col items-center gap-1.5 max-sm:gap-1 [@media(max-height:30rem)]:top-3">
       <div className="font-mono text-2xl font-bold tracking-[0.35em] text-foreground/95 drop-shadow-[0_2px_10px_rgba(0,0,0,0.9)] max-sm:text-lg [@media(max-height:30rem)]:text-lg">
-        WAVE {wave} <span className="text-muted-foreground">/ {WAVES.length}</span>
+        WAVE {wave} <span className="text-muted-foreground">/ {waveLimit}</span>
       </div>
       <div className="flex items-center gap-2 rounded-[3px] border border-border bg-background/55 px-2.5 py-1 backdrop-blur-sm">
         <span className="size-1.5 animate-pulse rounded-full bg-red-500" />

@@ -13,10 +13,10 @@ import type { EnemyKind } from '@/game/types'
 import { world } from '@/game/world'
 import { animateCrate, makeCrate, type CrateVis } from './Director.crate'
 
-// Director — game flow. Owns the phase machine (wave 1..5 → buffSelect → smash),
-// wave composition + drip-feeding drop requests to the AGI, wave-clear detection,
-// buff offers, run restarts (sole caller of world.reset()), and ammo-crate
-// spawning / rendering / pickup. Runs first every frame (FRAME_PRIO.director).
+// Director — game flow. Owns the phase machine (wave 1..WAVES.length → buffSelect
+// → smash), wave composition + drip-feeding drop requests to the AGI, wave-clear
+// detection, buff offers, run restarts (sole caller of world.reset()), and
+// ammo-crate spawning / rendering / pickup. Runs first every frame (FRAME_PRIO.director).
 
 // ─── Spawn-placement tuning (directives local to the Director, not in constants) ─
 const SPAWN_R_MIN = 8 // enemy drop polar radius range
@@ -128,6 +128,15 @@ function buildBag(quota: readonly number[]): EnemyKind[] {
   return bag
 }
 
+function quotaForWave(wave: number): readonly number[] {
+  const { mode, customConfig } = useGame.getState()
+  if (mode === 'custom') return customConfig.enemyCounts
+  const base = WAVES[(wave - 1) % WAVES.length]
+  if (mode !== 'endless') return base
+  const extraPerKind = Math.floor((wave - 1) / WAVES.length)
+  return base.map((count) => count + extraPerKind)
+}
+
 function pickBuffChoices(): BuffId[] {
   const pool = allBuffIds.slice()
   for (let i = pool.length - 1; i > 0; i--) {
@@ -178,7 +187,7 @@ export function Director() {
 
   function startWave(n: number): void {
     const local = localRef.current
-    const quota = WAVES[Math.min(Math.max(n, 1), WAVES.length) - 1]
+    const quota = quotaForWave(n)
     const total = quota[0] + quota[1] + quota[2] + quota[3] + quota[4]
     local.startedWave = n
     local.bag = buildBag(quota)
@@ -229,8 +238,14 @@ export function Director() {
     const s = useGame.getState()
     // buff picked (Hud nulled buffChoices but left phase 'buffSelect') → advance
     if (s.phase === 'buffSelect' && s.buffChoices === null) {
-      if (s.wave < WAVES.length) s.set({ phase: 'wave', wave: s.wave + 1 })
-      else s.set({ phase: 'smash' }) // the AGI advances smash → boss itself
+      const waveLimit = s.mode === 'custom' ? s.customConfig.waves : WAVES.length
+      if (s.mode === 'endless' || s.wave < waveLimit) {
+        s.set({ phase: 'wave', wave: s.wave + 1 })
+      } else if (s.mode === 'campaign' || (s.mode === 'custom' && s.customConfig.boss)) {
+        s.set({ phase: 'smash' }) // the AGI advances smash → boss itself
+      } else {
+        s.set({ phase: 'victory', warning: null, enemiesRemaining: 0 })
+      }
     }
     // safety net: never sit in 'wave' without that wave started (covers hot reload)
     const st = useGame.getState()
@@ -294,7 +309,7 @@ export function Director() {
     world.dropRequests.push({ id: world.id(), spawns })
   }
 
-  function safetyAndClear(_step: number): void {
+  function safetyAndClear(): void {
     const local = localRef.current
     const s = useGame.getState()
     if (local.startedWave !== s.wave || local.clearHandled) return
@@ -415,7 +430,7 @@ export function Director() {
     if (simRunning(s.phase)) {
       if (s.phase === 'wave') {
         dripFeed(step)
-        safetyAndClear(step)
+        safetyAndClear()
       }
       const phase = useGame.getState().phase // safetyAndClear may have advanced it
       if (phase === 'wave' || phase === 'boss') spawnCrates(step)

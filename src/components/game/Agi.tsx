@@ -3,7 +3,7 @@ import { useFrame } from '@react-three/fiber'
 import { useEffect, useState } from 'react'
 import * as THREE from 'three'
 import {
-  ARENA_RADIUS, BOSS_BOLT_DAMAGE, BOSS_BOLT_SPEED, BOSS_PATTERNS_PER_CYCLE, BOSS_TIRED_TIME,
+  ARENA_RADIUS, BOSS_BOLT_DAMAGE, BOSS_BOLT_SPEED, BOSS_PATTERNS_PER_CYCLE, BOSS_TIRED_TIME, BOSSFIGHT_TIRED_TIME,
   DEATHBEAM_SWEEP_TIME, DEATHBEAM_TELEGRAPH, DEATHBEAM_WIDTH, FRAME_PRIO, GRAVITY,
   MINIGUN_FIRE_TIME, MINIGUN_SPINUP, PUNCH_DAMAGE, PUNCH_HAND_HP_LIMIT, PUNCH_LINGER,
   ROCKET_COUNT, ROCKET_DAMAGE, ROCKET_RADIUS, ROCKET_TELEGRAPH, SMASH_WARN_TIME,
@@ -134,6 +134,7 @@ type PatternState =
       id: 'stripeBarrage'; t: number; yaws: number[]
       fired: boolean[]; beamed: boolean[]; endsA: THREE.Vector3[]; endsB: THREE.Vector3[]
     }
+  | { id: 'shockwave'; t: number; fired: number }
 
 interface DropState {
   req: DropRequest
@@ -288,15 +289,16 @@ function combatIdleGoals(S: Local, t: number, i: number): void {
   setPose(arm, 'fist')
 }
 
-function pickPatterns(): BossPatternId[] {
+function pickPatterns(extended = false): BossPatternId[] {
   const all: BossPatternId[] = ['rockets', 'deathBeam', 'laserBullets', 'punch', 'stripeBarrage']
+  if (extended) all.push('shockwave')
   for (let i = all.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1))
     const tmp = all[i]
     all[i] = all[j]
     all[j] = tmp
   }
-  return all.slice(0, BOSS_PATTERNS_PER_CYCLE)
+  return all.slice(0, extended ? all.length : BOSS_PATTERNS_PER_CYCLE)
 }
 
 function startPattern(S: Local, id: BossPatternId): void {
@@ -334,6 +336,9 @@ function startPattern(S: Local, id: BossPatternId): void {
       }
       break
     }
+    case 'shockwave':
+      S.pattern = { id, t: 0, fired: 0 }
+      break
   }
 }
 
@@ -779,6 +784,24 @@ function updateStripes(p: Extract<PatternState, { id: 'stripeBarrage' }>, S: Loc
   return false
 }
 
+function updateShockwave(p: Extract<PatternState, { id: 'shockwave' }>): boolean {
+  const volleyTimes = [0, 1.2, 2.4]
+  while (p.fired < volleyTimes.length && p.t >= volleyTimes[p.fired]) {
+    const volley = p.fired++
+    const target = world.player.pos
+    for (let i = 0; i < 8; i++) {
+      const angle = (i / 8) * Math.PI * 2 + volley * Math.PI / 8
+      _v1.set(target.x + Math.sin(angle) * 7.5, 0, target.z + Math.cos(angle) * 7.5)
+      clampToArena(_v1, ARENA_RADIUS - 2.5)
+      world.addTelegraph({
+        shape: 'circle', pos: _v1, radius: 2.2, duration: 0.95,
+        payload: { damage: 18, explosion: true, tag: 'rocket' },
+      })
+    }
+  }
+  return p.t >= 3.9
+}
+
 function updatePattern(S: Local, rig: AgiRig, step: number): boolean {
   const p = S.pattern
   if (!p) return true
@@ -789,6 +812,7 @@ function updatePattern(S: Local, rig: AgiRig, step: number): boolean {
     case 'laserBullets': return updateMiniguns(p, S, rig, step)
     case 'punch': return updatePunch(p, S, rig)
     case 'stripeBarrage': return updateStripes(p, S)
+    case 'shockwave': return updateShockwave(p)
   }
 }
 
@@ -893,7 +917,8 @@ function updateBoss(S: Local, rig: AgiRig, g: ReturnType<typeof useGame.getState
       if (hand) hand.pos.copy(rig.arms[i].hand.group.position)
       S.sparkPos[i].copy(rig.arms[i].hand.group.position)
     }
-    if (S.tiredT >= BOSS_TIRED_TIME) {
+    const tiredDuration = g.mode === 'bossfight' ? BOSSFIGHT_TIRED_TIME : BOSS_TIRED_TIME
+    if (S.tiredT >= tiredDuration) {
       world.agi.vulnerable = false
       world.agi.punchHands = []
       world.agi.mode = 'fighting'
@@ -904,10 +929,10 @@ function updateBoss(S: Local, rig: AgiRig, g: ReturnType<typeof useGame.getState
   }
   // fighting
   if (S.pattern) {
-    const done = updatePattern(S, rig, step)
-    if (done) {
-      S.pattern = null
-      S.betweenT = 0.8
+      const done = updatePattern(S, rig, step)
+      if (done) {
+        S.pattern = null
+        S.betweenT = g.mode === 'bossfight' ? 0.5 : 0.8
       if (S.cycle.length === 0) S.pendingTired = true
     }
     return
@@ -920,7 +945,7 @@ function updateBoss(S: Local, rig: AgiRig, g: ReturnType<typeof useGame.getState
     enterTired(S)
     return
   }
-  if (S.cycle.length === 0) S.cycle = pickPatterns()
+  if (S.cycle.length === 0) S.cycle = pickPatterns(g.mode === 'bossfight')
   const next = S.cycle.shift()
   if (next) startPattern(S, next)
 }

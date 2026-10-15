@@ -22,13 +22,13 @@ Build me a complete, polished browser game called **ATTACK AGI** — a fast-pace
 
 ## Player
 
-100 HP, eye height 1.7 m, capsule r 0.45, walk **9.5 m/s**, jump velocity 9.5 (gravity 26), pointer-lock mouse look. **Dodge** (Shift): 26 m/s dash for 0.22 s with 0.38 s of i-frames, 2.0 s cooldown, HUD pip. Arena: a 42 m-radius rooftop disc (helipad markings, crates/barriers as obstacles with collision).
+100 HP, eye height 1.7 m, capsule r 0.45, walk **8.4 m/s**, jump velocity 9.5 (gravity 26), pointer-lock mouse look. **Dodge** (Shift): 22 m/s dash for 0.22 s with 0.34 s of i-frames, 2.2 s cooldown, HUD pip. Arena: a 42 m-radius rooftop disc (helipad markings, crates/barriers as obstacles with collision).
 
 ## Weapons (slots 1/2/3, scroll or keys)
 
 1. **Revolver** ("R6 Judge"): 20 dmg, 6-round cylinder, full-auto while held at 0.26 s interval, 1.5 s swing-out speedloader reload, 90 reserve (crates refill), 120 m hitscan. **Red-dot sight** on the barrel; RMB = ADS (FOV zoom + centered model). Visible viewmodel with recoil.
 2. **Baseball bat**: 30 dmg, 3.0 m range, ~126° arc, 0.32 s swing; hold to charge 2.5 s → 3× damage (crosshair ring flashes at max). Hits at most the **3 nearest** targets per swing. Can smack the boss's lingering hands.
-3. **Molotov**: RMB shows arc trajectory + landing disc, LMB throws (22 m/s ballistic). 45 impact dmg, 4.5 m blast, leaves a fire puddle: 22 dps for 6 s — **friendly fire: your own puddle burns you too**. Start 2, capacity 4, can't aim when empty. Ammo crates (max 3 alive, every 14 s) give +2 and refill revolver reserve.
+3. **Molotov**: RMB shows arc trajectory + landing disc, LMB throws (22 m/s ballistic). 45 impact dmg, 4.5 m blast, leaves a fire puddle: 22 dps for 6 s — **friendly fire: your own puddle burns you too**. Start 2, capacity 4, can't aim when empty. Ammo crates (max 3 alive, every 12 s) give +2 and refill revolver reserve.
 
 **Headshots**: every enemy carries a small **glowing head display** (an AI-lab-logo screen); headshots require the ray to pass through a tight per-kind sphere on that display — not merely the top of the body cylinder — for 2× damage + red hitmarker. Body raycasts are **capped** cylinders (test the end caps — shots from directly under a flying enemy must hit).
 
@@ -36,15 +36,15 @@ Build me a complete, polished browser game called **ATTACK AGI** — a fast-pace
 
 | kind | hp | behavior |
 |---|---|---|
-| melee | 36 | chases 5.2 m/s, 10 dmg swing at 2.2 m |
+| melee | 36 | chases 5.6 m/s, 10 dmg swing at 2.2 m |
 | ranger | 22 | holds range, slow dodgeable bolts (15 m/s, 7 dmg) every 2.4 s; visibly holds its gun |
 | tank | 36 | slow 3.6 m/s, frontal shield (~112° arc **blocks bullets**), 1.5 s telegraphed bash charge: 18 m/s, 12 m, 22 dmg |
 | sniper | 22 | live green laser sight while tracking, 1.4 s aim-lock telegraph line, 26 dmg beam every 5 s |
-| drone | 22 | purple quad-rotor bomber flying at 8 m. **Dive-bombs**: rests/loiters 12–18 m out at 6 m/s, then attack-runs straight at you at **17 m/s**, drops a bomb on your position (red circle telegraph, 2.8 m, 1.5 s fall = telegraph time, 22 dmg), peels away, waits ~10 s (desynced). Headshot target: a little probe head on a chin boom at the **nose** (hit sphere tracks its dive tilt). Death = rotors stop, tumble-fall |
+| drone | 22 | purple quad-rotor bomber flying at 8 m. **Dive-bombs**: rests/loiters 12–18 m out at 6 m/s, then attack-runs straight at you at **15 m/s**, drops a bomb on your position (red circle telegraph, 2.8 m, 1.5 s fall = telegraph time, 22 dmg), peels away, waits ~12 s (desynced). Headshot target: a little probe head on a chin boom at the **nose** (hit sphere tracks its dive tilt). Death = rotors stop, tumble-fall |
 
-Concurrent cap 22 on the field; the AGI's hands physically **drop enemies in** batches of 5 every 4 s. `enemiesRemaining` must be **derived every frame** from alive + pending + in-flight + bag (never decrement-bookkeeping — it drifts and cascades). When ≤ 5 remain in a wave, stragglers get a glowing outline.
+Concurrent cap 16 on the field; the AGI's hands physically **drop enemies in** batches of 4 every 3.2 s. `enemiesRemaining` must be **derived every frame** from alive + pending + in-flight + bag (never decrement-bookkeeping — it drifts and cascades). When ≤ 5 remain in a wave, stragglers get a glowing outline.
 
-**Waves** [melee, ranger, tank, sniper, drone]: W1 [20,10,0,0,5] · W2 [20,10,5,0,10] · W3 [20,10,10,5,15] · W4 [20,10,20,10,15] · W5 [10,20,20,10,15].
+**Waves** [melee, ranger, tank, sniper, drone] — eight short rounds, composition ramps instead of body count: W1 [8,4,0,0,0] · W2 [9,5,2,0,2] · W3 [8,6,3,2,3] · W4 [8,6,4,3,4] · W5 [7,7,5,3,5] · W6 [7,8,5,4,6] · W7 [6,8,6,5,6] · W8 [6,9,7,5,7].
 
 ## Buffs
 
@@ -54,7 +54,7 @@ After each wave: 3 random cards (shadcn Card modal, keys 1–3), pick 1, stack a
 
 A giant robot (~60 m away beyond the rim) with a **CRT monitor head** showing pixel-emoticon faces that react to the fight: `:)` idle · `>:(` attacking · `:'(` hurt · `:|` tired · `:0` dying. Two enormous articulated hands. Behind it, big animated **eldritch tentacles with eyes** (custom shaders, SDF eyes) for creep factor. During waves it hovers dropping enemies.
 
-**After wave 5 — floor smash**: whole ground glows red, giant "JUMP! n" **countdown ticks down over 4 s**; airborne at impact (or dodge i-frames) or you are **instantly killed**. The smash clears all obstacles, then the boss bar (1100 HP) appears.
+**After the last wave — floor smash**: whole ground glows red, giant "JUMP! n" **countdown ticks down over 4 s**; airborne at impact (or dodge i-frames) or you are **instantly killed**. The smash clears all obstacles, then the boss bar (1100 HP) appears.
 
 **Bullet hell** — can't be damaged while attacking; after every 3 patterns it gets tired (`:|`), lowers hands + head onto the arena for 7 s — both are damageable then (bat works too). Patterns:
 1. **Rocket barrage** — 26 rockets carpet-bomb (red circle telegraphs, r 3.4, 24 dmg).
@@ -67,7 +67,7 @@ Boss death: `:0` face, staggered explosions, "AGI NEUTRALIZED" victory screen. P
 
 ## UI / menus (all shadcn)
 
-Title menu over the live 3D scene: glitch-text logo, **collapsible FIELD MANUAL** card (chevron minimizes it so the boss is visible), red ENGAGE button. HUD: crosshair + charge ring, HP bar, `6|90` ammo, weapon selector cards with icons (bottom-right), molotov count, wave banner + hostiles counter, boss bar, JUMP countdown, damage vignette, dodge pip, hitmarkers. Pause (ESC): **rebindable keys** (click-to-capture), mouse sensitivity slider, graphics quality (auto/potato/smooth/pretty) + brightness. Death/victory screens. Procedural WebAudio SFX (shots, hits, explosions, boss telegraphs) — no audio assets.
+Title menu over the live 3D scene: glitch-text logo with a marching hazard stripe underneath, a **system-check boot log** that types itself in line by line, a mission-intel strip (rounds / hostile classes / final target), **collapsible FIELD MANUAL** card (chevron minimizes it so the boss is visible), a pulsing red ENGAGE button, and a drifting scanline overlay. HUD: crosshair + charge ring, HP bar, `6|90` ammo, weapon selector cards with icons (bottom-right), molotov count, wave banner + hostiles counter, boss bar, JUMP countdown, damage vignette, dodge pip, hitmarkers. Pause (ESC): **rebindable keys** (click-to-capture), mouse sensitivity slider, graphics quality (auto/potato/smooth/pretty) + brightness. Death/victory screens. Procedural WebAudio SFX (shots, hits, explosions, boss telegraphs) — no audio assets.
 
 Hidden dev cheat listed in no menu: **K** mid-run wipes the field and skips straight to the smash → boss sequence.
 

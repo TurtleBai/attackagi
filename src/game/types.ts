@@ -2,10 +2,17 @@ import type * as THREE from 'three'
 import type { BuffId } from './constants'
 
 export type GamePhase = 'menu' | 'wave' | 'buffSelect' | 'smash' | 'boss' | 'victory' | 'dead' | 'paused'
+export type GameMode = 'campaign' | 'endless' | 'custom' | 'bossfight'
+export type EnemyQuota = [number, number, number, number, number]
+export interface CustomRunConfig {
+  enemyCounts: EnemyQuota
+  waves: number
+  boss: boolean
+}
 export type WeaponSlot = 1 | 2 | 3 // 1 pistol, 2 bat, 3 molotov
 export type EnemyKind = 'melee' | 'ranger' | 'tank' | 'sniper' | 'drone'
 export type BossFace = 'happy' | 'angry' | 'hurt' | 'tired' | 'surprised'
-export type BossPatternId = 'rockets' | 'deathBeam' | 'laserBullets' | 'punch' | 'stripeBarrage'
+export type BossPatternId = 'rockets' | 'deathBeam' | 'laserBullets' | 'punch' | 'stripeBarrage' | 'shockwave'
 
 // ─── World entities (mutable, per-frame; never in zustand) ───────────────────
 

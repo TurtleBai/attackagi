@@ -1,16 +1,18 @@
 # Attack AGI — Game Spec
 
-A 3D fast-paced first-person horde shooter with roguelike elements. The player fights 5 waves of robot hordes dropped into an arena by a giant AGI (a monitor-headed sky god), picks a buff after each wave, then fights the AGI itself in a bullet-hell boss fight.
+A 3D fast-paced first-person horde shooter with roguelike elements. The player fights 8 short waves of robot hordes dropped into an arena by a giant AGI (a monitor-headed sky god), picks a buff after each wave, then fights the AGI itself in a bullet-hell boss fight.
 
 All tuning numbers live in `src/game/constants.ts` (referenced here by constant name). Shared runtime state contracts live in `src/game/world.ts`, `store.ts`, `types.ts`, `events.ts`.
 
 ## Game flow (phase machine, owned by Director)
+`menu` → click Start → `wave` (1) → wave cleared → `buffSelect` (3 random buffs, pick 1) → `wave` (2) … through the last wave → `smash` (AGI smashes the floor: whole ground glows red with a big "JUMP!" countdown at top of screen ticking down over `SMASH_WARN_TIME` (4s); the player must be airborne at impact or is **instantly killed**; smash **clears all obstacles**) → `boss` (boss health bar appears at top) → boss HP 0 → `victory` (AGI makes a surprised `:0` face, then blows up). Player HP 0 at
+any point → `dead` (retry restarts the whole run — roguelike).
 
-`menu` → click Start → `wave` (1) → wave cleared → `buffSelect` (3 random buffs, pick 1) → `wave` (2) … through wave 5 → `smash` (AGI smashes the floor: whole ground glows red with a big "JUMP!" countdown at top of screen ticking down over `SMASH_WARN_TIME` (4s); the player must be airborne at impact or is **instantly killed**; smash **clears all obstacles**) → `boss` (boss health bar appears at top) → boss HP 0 → `victory` (AGI makes a surprised `:0` face, then blows up). Player HP 0 at any point → `dead` (retry restarts the whole run — roguelike).
+The default **Campaign** is always available. Completing it unlocks **Endless**, **Custom**, and **Bossfight+** in local browser storage. Endless repeats the eight-round composition table and adds one enemy of every class per completed cycle; it never enters the final boss. Custom sets enemy counts per class (0–40), rounds (1–8), and whether to include the standard boss. Bossfight+ starts at the floor-smash sequence and gives the boss 1900 HP, all six attack patterns per cycle, and shorter vulnerable pauses.
 
 ## Player
 
-First-person camera at eye height `PLAYER_EYE`. Fast base walk speed `PLAYER_SPEED`. WASD move, mouse look (pointer lock), Space jump (`JUMP_VELOCITY`, gravity `GRAVITY`), Shift dodge: dashes in current movement direction (`DODGE_SPEED`, `DODGE_TIME`), grants i-frames (`DODGE_IFRAMES`), cooldown `DODGE_COOLDOWN` (2s). Player HP `PLAYER_HP`. Capsule collision vs obstacles and arena bounds (radius `ARENA_RADIUS`).
+First-person camera at eye height `PLAYER_EYE`. Fast base walk speed `PLAYER_SPEED`. WASD move, mouse look (pointer lock), Space jump (`JUMP_VELOCITY`, gravity `GRAVITY`), Shift dodge: dashes in current movement direction (`DODGE_SPEED`, `DODGE_TIME`), grants i-frames (`DODGE_IFRAMES`), cooldown `DODGE_COOLDOWN` (2.2s). Player HP `PLAYER_HP`. Capsule collision vs obstacles and arena bounds (radius `ARENA_RADIUS`).
 
 ## Weapons (keys 1/2/3 to select)
 
@@ -28,19 +30,24 @@ First-person camera at eye height `PLAYER_EYE`. Fast base walk speed `PLAYER_SPE
 | **ranger** | stands still, shoots slow dodgeable laser bolts (`RANGER_BOLT_SPEED`) every `RANGER_INTERVAL` | `RANGER_HP` (lower than melee) | `RANGER_DAMAGE` |
 | **tank** | melee-bot with a **shield**, no sword. Walks at player; near range stops, telegraphs for `TANK_WINDUP` = 1.5s with a **red rectangle floor indicator** along its dash path, then shield-bashes (dash `TANK_BASH_SPEED`, `TANK_DAMAGE`). Shield **blocks player bullets** from the front (~`TANK_SHIELD_ARC`). HP = melee's. | `TANK_HP` | `TANK_DAMAGE` |
 | **sniper** | robot with a sniper rifle + lens over one eye. Every `SNIPER_INTERVAL` = 5s: telegraphs a **red floor line indicator** where its beam will go (`SNIPER_AIM_TIME`), then fires an instant laser beam. HP = ranger's. | `SNIPER_HP` | `SNIPER_DAMAGE` |
-| **drone** | purple-glowing quad-rotor bomber gunship, **flying**: its AGI-hand drop arrests mid-air at `DRONE_ALTITUDE` (~8m) instead of the ground. It **dive-bombs**: rests/loiters 12–18m out cruising at `DRONE_LOITER_SPEED`, then makes a fast attack run straight at the player at `DRONE_SPEED` (17 m/s); when it passes overhead it telegraphs a **red circle floor indicator** at the player's position (`DRONE_BOMB_RADIUS`, `DRONE_BOMB_TELEGRAPH`) and drops a bomb timed to land at the telegraph's resolve — the player has to dodge the drop — then peels away and waits `DRONE_REST` (~10s, desynced per drone) before the next run. Out of bat reach; headshots require hitting the little probe head thrust ahead of the nose on a chin boom (it faces the player during attack runs, and the hit sphere tracks the dive tilt); on death its rotors stop and it tumble-falls to the floor. HP = ranger's. | `DRONE_HP` | `DRONE_BOMB_DAMAGE` |
+| **drone** | purple-glowing quad-rotor bomber gunship, **flying**: its AGI-hand drop arrests mid-air at `DRONE_ALTITUDE` (~8m) instead of the ground. It **dive-bombs**: rests/loiters 12–18m out cruising at `DRONE_LOITER_SPEED`, then makes a fast attack run straight at the player at `DRONE_SPEED` (15 m/s); when it passes overhead it telegraphs a **red circle floor indicator** at the player's position (`DRONE_BOMB_RADIUS`, `DRONE_BOMB_TELEGRAPH`) and drops a bomb timed to land at the telegraph's resolve — the player has to dodge the drop — then peels away and waits `DRONE_REST` (~12s, desynced per drone) before the next run. Out of bat reach; headshots require hitting the little probe head thrust ahead of the nose on a chin boom (it faces the player during attack runs, and the hit sphere tracks the dive tilt); on death its rotors stop and it tumble-falls to the floor. HP = ranger's. | `DRONE_HP` | `DRONE_BOMB_DAMAGE` |
 
 **Terrain favors the player**: obstacles block shield bashes, sniper/boss laser beams, and ranger bolts (line-of-sight checks via `world.segmentBlocked`).
 
 ## Waves (`WAVES` table)
 
+Eight short rounds (14–39 hostiles each) — slightly more enemies than before, with difficulty ramping through composition. Every clear is a buff pick.
+
 | wave | melee | ranger | tank | sniper | drone |
 |---|---|---|---|---|---|
-| 1 | 20 | 10 | – | – | 5 |
-| 2 | 20 | 10 | 5 | – | 10 |
-| 3 | 20 | 10 | 10 | 5 | 15 |
-| 4 | 20 | 10 | 20 | 10 | 15 |
-| 5 | 10 | 20 | 20 | 10 | 15 |
+| 1 | 9 | 5 | – | – | – |
+| 2 | 10 | 6 | 2 | – | 2 |
+| 3 | 9 | 7 | 4 | 2 | 4 |
+| 4 | 9 | 7 | 5 | 3 | 5 |
+| 5 | 8 | 8 | 6 | 4 | 6 |
+| 6 | 8 | 9 | 6 | 5 | 7 |
+| 7 | 7 | 9 | 7 | 6 | 7 |
+| 8 | 7 | 10 | 8 | 6 | 8 |
 
 Enemies are drip-fed: the Director pushes drop requests (`world.dropRequests`); the AGI grabs a cluster in a hand, reaches down, and releases them (→ `world.pendingSpawns`, consumed by Enemies). Keep concurrent enemies ≤ `MAX_CONCURRENT_ENEMIES`.
 
@@ -52,7 +59,7 @@ Pool in `constants.ts` `BUFFS`: pistol damage, mag size, reserve size, fire rate
 
 Visuals: a **big computer monitor in the sky** as the head, with a **pixelated face** (canvas texture, chunky pixels) showing expressions; a body below/behind it; **two large arms** that extend/telescope to reach anywhere. Faces: waiting `:)` happy · attacking `>:(` angry · when hit `:'(` pained · tired `:|` · on death `:0` surprised.
 
-During waves it hovers beyond the arena rim dropping enemies. After wave 5 it smashes the floor (see flow), then fights directly — **bullet hell**. The player **cannot damage the AGI while it attacks**; after every **3 attack patterns** it gets tired (`:|`), lowers its hands onto the arena for `BOSS_TIRED_TIME` — hands + monitor are vulnerable then. Then it raises its hands and resumes. Boss HP `BOSS_HP` shown in a top bar.
+During waves it hovers beyond the arena rim dropping enemies. After the last wave it smashes the floor (see flow), then fights directly — **bullet hell**. The player **cannot damage the AGI while it attacks**; after every **3 attack patterns** it gets tired (`:|`), lowers its hands onto the arena for `BOSS_TIRED_TIME` — hands + monitor are vulnerable then. Then it raises its hands and resumes. Boss HP `BOSS_HP` shown in a top bar.
 
 **Attack patterns** (telegraph everything on the floor in red; all beams/projectiles blocked by nothing during boss phase — obstacles are gone):
 
@@ -61,9 +68,12 @@ During waves it hovers beyond the arena rim dropping enemies. After wave 5 it sm
 3. **Laser Bullets** — arms morph into miniguns, spin up for `MINIGUN_SPINUP` = 5s with a floor aim marker tracking the player's position, then hose fast-but-dodgeable bolts (`BOSS_BOLT_SPEED`) — dodge by strafing/running.
 4. **Punch** — both hands punch down (red circle telegraphs, `PUNCH_DAMAGE`), then the hands **stay on the arena** for `PUNCH_LINGER` letting the player deal a little damage.
 5. **Laser Beam Barrage** — stripes of parallel lasers across the arena floor (red stripe telegraphs first); 3 barrages, alternating side/angle so safe lanes shift.
+6. **Shockwave Ring** (Bossfight+ only) — three staggered rings of eight explosive floor impacts chase the player's recent position.
+
+Bossfight+ cycles through all six patterns instead of three, has `BOSSFIGHT_HP`, and shortens vulnerable windows to `BOSSFIGHT_TIRED_TIME`.
 
 Lasers aimed at the player travel slow enough to dodge. Telegraph shapes use `world.addTelegraph` (circle/rect), rendered by Vfx, damage resolved centrally by the Hazards system at `tHit`.
 
 ## HUD (shadcn/ui, DOM overlay)
 
-Crosshair (+ bat charge ring, flashes at max), HP bar, ammo `8/40`, molotov count, weapon selector 1/2/3, wave banner + enemies-remaining, buff select modal (3 cards), boss health bar, giant "JUMP! n" countdown during smash, dodge cooldown pip, damage vignette, death screen (retry), victory screen.
+Crosshair (+ bat charge ring, flashes at max), HP bar, ammo `8/40`, molotov count, weapon selector 1/2/3, wave banner + enemies-remaining, buff select modal (3 cards), boss health bar, giant "JUMP! n" countdown during smash, dodge cooldown pip, damage vignette, death screen (retry), victory screen and a campaign-unlocked mode selector. Custom exposes per-class enemy counts, round count and boss toggle.
